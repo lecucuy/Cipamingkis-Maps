@@ -359,7 +359,7 @@ if (!API_URL) {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const res = await axios.get(`${API_URL}/api/intake/geodata`, { timeout: 10000 });
+        const res = await axios.get(`${API_URL}/intake/geodata`, { timeout: 10000 });
         const data = res.data;
         setGeoData(data);
         const categorizedPoints = (data.points || []).map((p: any) => {
