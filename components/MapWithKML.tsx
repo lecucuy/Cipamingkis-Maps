@@ -93,11 +93,11 @@ export default function MapWithKML() {
   const [searchQuery, setSearchQuery] = useState('');
   const { data: session } = useSession(); 
   // ===== DI ATAS, TAMBAHKAN STATE =====
-const [buildingMedia, setBuildingMedia] = useState<Record<string, any[]>>({});
-const [loadingMedia, setLoadingMedia] = useState<Record<string, boolean>>({});
-// Di dalam komponen
-const [L, setL] = useState<any>(null);
-const [turf, setTurf] = useState<any>(null);
+  const [buildingMedia, setBuildingMedia] = useState<Record<string, any[]>>({});
+  const [loadingMedia, setLoadingMedia] = useState<Record<string, boolean>>({});
+  // Di dalam komponen
+  const [L, setL] = useState<any>(null);
+  const [turf, setTurf] = useState<any>(null);
 
 useEffect(() => {
   const loadLibraries = async () => {
