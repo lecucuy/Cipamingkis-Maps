@@ -5,7 +5,7 @@ import { useSession } from 'next-auth/react';
 import axios from 'axios';
 import imageCompression from 'browser-image-compression'; // import library
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001/api';
+const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
 interface MediaItem {
   _id: string;
