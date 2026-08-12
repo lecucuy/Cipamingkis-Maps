@@ -17,8 +17,6 @@ import {
   Filler
 } from 'chart.js';
 import { Line } from 'react-chartjs-2';
-import FileUpload from "@/components/FileUpload";
-import FileGallery from "@/components/FileGallery";
 import BuildingMedia from "@/components/BuildingMedia";
 
 // 1. IMPORT CSS SECARA STATIS DI ATAS (Sangat Aman untuk Next.js / Turbopack)
@@ -588,12 +586,12 @@ const renderData = useCallback(() => {
   if (!mapReady || !mapRef.current || !geoData || !L) return;
     const map = mapRef.current;
     console.log('📊 Render data...');
-    map.eachLayer((layer) => {
-      if (!(layer instanceof L.TileLayer) &&
-          !(layer instanceof L.Control) &&
-          !(layer instanceof L.Control.Zoom) &&
-          !(layer instanceof L.Control.Scale)) {
-        map.removeLayer(layer);
+    map.eachLayer((l: any) => {
+      if (!(l instanceof L.TileLayer) &&
+          !(l instanceof L.Control) &&
+          !(l instanceof L.Control.Zoom) &&
+          !(l instanceof L.Control.Scale)) {
+        map.removeLayer(l);
       }
     });
     layerGroupsRef.current = {};
@@ -727,7 +725,7 @@ const renderData = useCallback(() => {
             name: line.name || 'Sempadan',
             length: totalLength,
             segments: segments,
-            coordinates: latlngs.map(l => [l.lat, l.lng])
+            coordinates: latlngs.map((l: L.LatLng) => [l.lat, l.lng]) // <-- Tambahkan : L.LatLng
           });
           if (!isPanelOpen) setIsPanelOpen(true);
         });
@@ -755,7 +753,7 @@ const renderData = useCallback(() => {
     });
 
     // ===== MARKERS =====
-    const markerGroups: Record<string, L.MarkerClusterGroup> = {};
+    const markerGroups: Record<string, any> = {};
     Object.keys(CATEGORY_CONFIG).forEach(key => {
       if (CATEGORY_CONFIG[key]?.type !== 'point') return;
       markerGroups[key] = L.markerClusterGroup({
@@ -846,7 +844,7 @@ points.forEach((point: any, idx: number) => {
     });
 
     if (points.length > 0 && !initialFitDone.current) {
-      const bounds = L.latLngBounds(points.map(p => [p.lat, p.lon]));
+      const bounds = L.latLngBounds(points.map((p: any) => [p.lat, p.lon]));
       map.fitBounds(bounds, { padding: [50, 50] });
       initialFitDone.current = true;
     }
@@ -889,11 +887,11 @@ points.forEach((point: any, idx: number) => {
   const filteredPoints = useMemo(() => {
     if (!searchQuery.trim()) return stationPoints;
     const q = searchQuery.toLowerCase();
-    return stationPoints.filter((p: any) => 
-      p.name.toLowerCase().includes(q) || 
-      p.description?.toLowerCase().includes(q) ||
-      p.category?.toLowerCase().includes(q)
-    );
+      return stationPoints.filter((p: any) => 
+        p.name.toLowerCase().includes(q) || 
+        p.description?.toLowerCase().includes(q) ||
+        p.category?.toLowerCase().includes(q)
+      );
   }, [stationPoints, searchQuery]);
 
   // ============ CHART OPTIONS ============
