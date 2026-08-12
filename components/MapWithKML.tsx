@@ -310,7 +310,11 @@ useEffect(() => {
     "SALURAN_DEFAULT": true,
   });
 
-  const API_URL = 'http://localhost:5001';
+  const API_URL = process.env.NEXT_PUBLIC_API_URL;
+
+if (!API_URL) {
+  throw new Error('NEXT_PUBLIC_API_URL belum dikonfigurasi');
+}
 
   // ============ FUNGSI KATEGORISASI ============
   const categorizeFeature = (name: string, description: string = '', type: string = 'point') => {
