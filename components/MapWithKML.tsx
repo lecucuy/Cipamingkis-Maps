@@ -98,6 +98,7 @@ export default function MapWithKML() {
   // Di dalam komponen
   const [L, setL] = useState<any>(null);
   const [turf, setTurf] = useState<any>(null);
+  const legendContainerRef = useRef<HTMLDivElement | null>(null);
 
 useEffect(() => {
   const loadLibraries = async () => {
@@ -450,6 +451,7 @@ let legendVisible = true;
 
 legend.onAdd = () => {
   const container = L.DomUtil.create('div', 'legend-container');
+  legendContainerRef.current = container;
   container.style.position = 'relative';
   
   const div = L.DomUtil.create('div', 'info legend');
@@ -584,6 +586,17 @@ legend.onAdd = () => {
       console.log('✅ Map siap!');
     }
   }, [loading, error]);
+
+  useEffect(() => {
+  if (!legendContainerRef.current) return;
+  const isMobile = window.innerWidth < 640;
+  const el = legendContainerRef.current;
+  if (isMobile) {
+    el.style.display = isPanelOpen ? 'none' : 'block';
+  } else {
+    el.style.display = 'block';
+  }
+}, [isPanelOpen]);
 
   // ============ RENDER DATA ============
 const renderData = useCallback(() => {
