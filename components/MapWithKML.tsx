@@ -961,7 +961,8 @@ points.forEach((point: any, idx: number) => {
         <div ref={containerRef} className="absolute inset-0 h-full w-full" />
 
         {/* ===== SEARCH BAR ===== */}
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] w-[90%] max-w-lg">
+        <div className={`absolute top-4 w-[90%] max-w-lg 
+  ${isPanelOpen ? 'left-4 translate-x-0 z-[990]' : 'left-1/2 -translate-x-1/2 z-[1000]'}`}>
           <div className="relative">
             <input
               type="text"
