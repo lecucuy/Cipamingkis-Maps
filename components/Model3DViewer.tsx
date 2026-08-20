@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense } from 'react';
 import { Canvas, useLoader } from '@react-three/fiber';
 import { OrbitControls, Environment } from '@react-three/drei';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 function Model({ url }: { url: string }) {
   const gltf = useLoader(GLTFLoader, url);
