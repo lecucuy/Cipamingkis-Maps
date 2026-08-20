@@ -3,14 +3,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSession } from 'next-auth/react';
 import axios from 'axios';
-import imageCompression from 'browser-image-compression'; // import library
+import imageCompression from 'browser-image-compression';
+import Model3DViewer from '@/components/Model3DViewer';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL;
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5001/api";
 
 interface MediaItem {
   _id: string;
   building_id: string;
-  media_type: 'photo' | 'video' | 'maintenance';
+  media_type: 'photo' | 'video' | 'maintenance' | 'model_3d';
   file_type: string;
   file_url: string;
   description: string;
@@ -35,27 +36,33 @@ export default function BuildingMedia({
   const [file, setFile] = useState<File | null>(null);
   const [filePreview, setFilePreview] = useState<string | null>(null);
   const [description, setDescription] = useState('');
-  const [mediaType, setMediaType] = useState<'photo' | 'video' | 'maintenance'>('photo');
+  const [mediaType, setMediaType] = useState<'photo' | 'video' | 'maintenance' | 'model_3d'>('photo');
   const [timestamp, setTimestamp] = useState('');
-  const [activeTab, setActiveTab] = useState<'photo' | 'video' | 'maintenance'>('photo');
+  const [activeTab, setActiveTab] = useState<'photo' | 'video' | 'maintenance' | 'model_3d'>('photo');
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [previewMedia, setPreviewMedia] = useState<MediaItem | null>(null); // <-- state preview
+  const [previewMedia, setPreviewMedia] = useState<MediaItem | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-  const [uploadQueue, setUploadQueue] = useState<File[]>([]);
   const [uploadIndex, setUploadIndex] = useState(0);
   const [totalProgress, setTotalProgress] = useState(0);
+  const [selectedModelUrl, setSelectedModelUrl] = useState<string | null>(null);
 
+  // ===== LOAD MEDIA (via batch) =====
   const loadMedia = useCallback(async () => {
     if (!buildingId) return;
     try {
-      const res = await axios.get(`${API_URL}/buildings/media/${buildingId}`);
-      setMedia(res.data?.media || []);
+      console.log('[loadMedia] Fetching via batch for:', buildingId);
+      const res = await axios.post(`${API_URL}/buildings/media/batch`, [buildingId]);
+      const mediaData = res.data?.media || {};
+      const items = mediaData[buildingId] || [];
+      console.log('[loadMedia] Items found:', items.length);
+      setMedia(items);
     } catch (err: any) {
       if (err.response?.status === 404) {
         setMedia([]);
       } else {
         console.error('Gagal load media:', err);
+        setMedia([]);
       }
     } finally {
       setLoading(false);
@@ -66,18 +73,12 @@ export default function BuildingMedia({
     loadMedia();
   }, [loadMedia]);
 
-
-    // ===== KOMPRESI GAMBAR =====
+  // ===== KOMPRESI GAMBAR =====
   const compressImage = async (file: File): Promise<File> => {
     if (!file.type.startsWith('image/')) return file;
-    // Jika HEIC, skip kompresi di frontend (backend handle)
     if (file.type === 'image/heic' || file.type === 'image/heif') return file;
     try {
-      const options = {
-        maxSizeMB: 2,          // target ukuran maks 2MB
-        maxWidthOrHeight: 1920,
-        useWebWorker: true,
-      };
+      const options = { maxSizeMB: 2, maxWidthOrHeight: 1920, useWebWorker: true };
       const compressed = await imageCompression(file, options);
       return compressed;
     } catch (e) {
@@ -86,22 +87,28 @@ export default function BuildingMedia({
     }
   };
 
-  // ===== HANDLE FILE SELECT MULTIPLE =====
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
     const fileArray = Array.from(files);
-    // Filter ukuran > 100MB
+    if (activeTab === 'model_3d') {
+      const invalidFiles = fileArray.filter(f => {
+        const ext = f.name.split('.').pop()?.toLowerCase();
+        return !['glb', 'gltf'].includes(ext || '');
+      });
+      if (invalidFiles.length > 0) {
+        alert('Hanya file .glb atau .gltf yang diterima untuk model 3D');
+        return;
+      }
+    }
     const validFiles = fileArray.filter(f => f.size <= 100 * 1024 * 1024);
     if (validFiles.length !== fileArray.length) {
       alert('Beberapa file >100MB, akan diabaikan.');
     }
     setSelectedFiles(prev => [...prev, ...validFiles]);
-    // Reset input agar bisa pilih ulang
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // ===== UPLOAD MULTIPLE =====
   const handleMultipleUpload = async () => {
     if (selectedFiles.length === 0) {
       alert('Pilih file dulu!');
@@ -118,8 +125,7 @@ export default function BuildingMedia({
 
     for (let i = 0; i < selectedFiles.length; i++) {
       let file = selectedFiles[i];
-      // Kompresi gambar sebelum upload
-      if (file.type.startsWith('image/') && file.type !== 'image/heic' && file.type !== 'image/heif') {
+      if (activeTab !== 'model_3d' && file.type.startsWith('image/') && file.type !== 'image/heic' && file.type !== 'image/heif') {
         try {
           file = await compressImage(file);
         } catch (e) {
@@ -149,21 +155,13 @@ export default function BuildingMedia({
       }
     }
 
-    // Selesai
     setSelectedFiles([]);
     setUploading(false);
     setUploadIndex(0);
     setTotalProgress(0);
-    loadMedia(); // refresh list
+    await loadMedia();
     if (onMediaChange) onMediaChange();
     alert('✅ Semua file berhasil diupload!');
-  };
-
-
-
- // ===== HAPUS FILE DARI DAFTAR =====
-  const removeFile = (index: number) => {
-    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   const handleFileSelect = (selectedFile: File | null) => {
@@ -183,12 +181,6 @@ export default function BuildingMedia({
       setFilePreview(null);
     }
   };
-
-//   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-//     const selectedFile = e.target.files?.[0] || null;
-//     handleFileSelect(selectedFile);
-//     if (fileInputRef.current) fileInputRef.current.value = '';
-//   };
 
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
@@ -250,11 +242,10 @@ export default function BuildingMedia({
       setDescription('');
       setTimestamp('');
       setUploadProgress(0);
-      loadMedia();
+      await loadMedia();
       alert('✅ Upload berhasil!');
     } catch (err: any) {
       console.error('Upload error:', err);
-      console.error('Response:', err.response?.data);
       alert(err.response?.data?.detail || '❌ Gagal upload');
     } finally {
       setUploading(false);
@@ -267,7 +258,7 @@ export default function BuildingMedia({
       await axios.delete(`${API_URL}/buildings/media/${id}`, {
         headers: { 'Authorization': `Bearer ${session?.accessToken}` },
       });
-      loadMedia();
+      await loadMedia();
       alert('✅ Media berhasil dihapus!');
     } catch (err) {
       console.error('Gagal hapus:', err);
@@ -276,6 +267,21 @@ export default function BuildingMedia({
   };
 
   const filtered = media.filter((item) => item.media_type === activeTab);
+
+  // ===== EFFECT UNTUK MODEL 3D =====
+  useEffect(() => {
+    if (activeTab === 'model_3d') {
+      const models = media.filter(m => m.media_type === 'model_3d');
+      if (models.length > 0) {
+        const lastModel = models[models.length - 1];
+        if (!selectedModelUrl || !models.some(m => m.file_url === selectedModelUrl)) {
+          setSelectedModelUrl(lastModel.file_url);
+        }
+      } else {
+        setSelectedModelUrl(null);
+      }
+    }
+  }, [activeTab, media]);
 
   if (!buildingId) return null;
 
@@ -290,11 +296,13 @@ export default function BuildingMedia({
           { key: 'photo', label: '📷 Foto' },
           { key: 'video', label: '🎥 Video' },
           { key: 'maintenance', label: '🔧 Perbaikan' },
+          { key: 'model_3d', label: '🧊 3D' },
         ].map((tab) => {
           const count = media.filter(m => m.media_type === tab.key).length;
           return (
             <button
               key={tab.key}
+              type="button"
               onClick={() => {
                 setActiveTab(tab.key as any);
                 setMediaType(tab.key as any);
@@ -316,92 +324,117 @@ export default function BuildingMedia({
         })}
       </div>
 
-      <div className="max-h-64 overflow-y-auto pr-1 space-y-2 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600">
-        {loading ? (
-          <div className="flex justify-center py-4">
-            <div className="w-6 h-6 border-2 border-[#00c8ff] border-t-transparent rounded-full animate-spin"></div>
-          </div>
-        ) : filtered.length === 0 ? (
-          <p className="text-xs text-gray-400 text-center py-4">
-            Belum ada {activeTab === 'photo' ? 'foto' : activeTab === 'video' ? 'video' : 'riwayat perbaikan'}
-          </p>
-        ) : (
-          <div className="grid grid-cols-2 gap-2">
-            {filtered.map((item) => (
-              <div
-                key={item._id}
-                className="relative group bg-white dark:bg-[#1a1a2e] rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow border border-gray-200 dark:border-gray-700"
-              >
-                {/* Badge tipe media */}
-                <div className="absolute top-1 left-1 z-10 bg-black/60 text-white text-[8px] px-1.5 py-0.5 rounded flex items-center gap-1">
-                  {item.media_type === 'photo' && '📷'}
-                  {item.media_type === 'video' && '🎥'}
-                  {item.media_type === 'maintenance' && '🔧'}
-                </div>
-
-                {/* Konten media - ukuran lebih besar */}
-                {(item.file_type === 'images' || item.file_type === 'image') && (
-                  <img
-                    src={item.file_url}
-                    alt={item.description || 'Media'}
-                    className="w-full h-32 object-cover cursor-pointer"
-                    onClick={() => setPreviewMedia(item)}
-                  />
-                )}
-                {(item.file_type === 'videos' || item.file_type === 'video') && (
-                  <video
-                    src={item.file_url}
-                    className="w-full h-40 object-cover rounded-t-lg cursor-pointer"
-                    controls
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setPreviewMedia(item);
-                    }}
-                  />
-                )}
-                {(item.file_type === 'documents' || item.file_type === 'document') && (
-                  <div className="w-full h-24 flex items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-400">
-                    <i className="fa-solid fa-file-pdf text-3xl"></i>
+      {activeTab === 'model_3d' ? (
+        <div className="space-y-3">
+          <Model3DViewer url={selectedModelUrl} className="w-full h-[400px] sm:h-[500px]" />
+          {filtered.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {filtered.map((item) => (
+                <button
+                  key={item._id}
+                  type="button"
+                  onClick={() => setSelectedModelUrl(item.file_url)}
+                  className={`px-3 py-1.5 text-xs rounded-lg border transition-all ${
+                    selectedModelUrl === item.file_url
+                      ? 'border-[#00c8ff] bg-[#00c8ff]/10 text-[#00c8ff]'
+                      : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-[#00c8ff]'
+                  }`}
+                >
+                  <i className="fa-solid fa-cube mr-1"></i>
+                  {item.description || 'Model 3D'}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-gray-400 text-center py-2">
+              Belum ada model 3D. Upload sekarang!
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="max-h-64 overflow-y-auto pr-1 space-y-2 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600">
+          {loading ? (
+            <div className="flex justify-center py-4">
+              <div className="w-6 h-6 border-2 border-[#00c8ff] border-t-transparent rounded-full animate-spin"></div>
+            </div>
+          ) : filtered.length === 0 ? (
+            <p className="text-xs text-gray-400 text-center py-4">
+              Belum ada {activeTab === 'photo' ? 'foto' : activeTab === 'video' ? 'video' : 'riwayat perbaikan'}
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-2">
+              {filtered.map((item) => (
+                <div
+                  key={item._id}
+                  className="relative group bg-white dark:bg-[#1a1a2e] rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow border border-gray-200 dark:border-gray-700"
+                >
+                  <div className="absolute top-1 left-1 z-10 bg-black/60 text-white text-[8px] px-1.5 py-0.5 rounded flex items-center gap-1">
+                    {item.media_type === 'photo' && '📷'}
+                    {item.media_type === 'video' && '🎥'}
+                    {item.media_type === 'maintenance' && '🔧'}
                   </div>
-                )}
-                {!['images','image','videos','video','documents','document'].includes(item.file_type) && (
-                  <div className="w-full h-24 flex items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-400">
-                    <i className="fa-solid fa-file text-3xl"></i>
+
+                  {(item.file_type === 'images' || item.file_type === 'image') && (
+                    <img
+                      src={item.file_url}
+                      alt={item.description || 'Media'}
+                      className="w-full h-32 object-cover cursor-pointer"
+                      onClick={() => setPreviewMedia(item)}
+                    />
+                  )}
+                  {(item.file_type === 'videos' || item.file_type === 'video') && (
+                    <video
+                      src={item.file_url}
+                      className="w-full h-40 object-cover rounded-t-lg cursor-pointer"
+                      controls
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPreviewMedia(item);
+                      }}
+                    />
+                  )}
+                  {(item.file_type === 'documents' || item.file_type === 'document') && (
+                    <div className="w-full h-24 flex items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-400">
+                      <i className="fa-solid fa-file-pdf text-3xl"></i>
+                    </div>
+                  )}
+                  {!['images','image','videos','video','documents','document'].includes(item.file_type) && (
+                    <div className="w-full h-24 flex items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-400">
+                      <i className="fa-solid fa-file text-3xl"></i>
+                    </div>
+                  )}
+
+                  <div className="p-2">
+                    <p className="text-xs font-medium truncate text-gray-700 dark:text-gray-300">
+                      {item.description || 'Tanpa deskripsi'}
+                    </p>
+                    <p className="text-[10px] text-gray-400">
+                      {item.timestamp ? new Date(item.timestamp).toLocaleDateString('id-ID') : '-'}
+                    </p>
                   </div>
-                )}
 
-                <div className="p-2">
-                  <p className="text-xs font-medium truncate text-gray-700 dark:text-gray-300">
-                    {item.description || 'Tanpa deskripsi'}
-                  </p>
-                  <p className="text-[10px] text-gray-400">
-                    {item.timestamp ? new Date(item.timestamp).toLocaleDateString('id-ID') : '-'}
-                  </p>
+                  {session && (
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(item._id)}
+                      className="absolute top-1 right-1 w-6 h-6 rounded-full bg-red-500/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
+                    >
+                      <i className="fa-solid fa-trash text-xs"></i>
+                    </button>
+                  )}
                 </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
-                {session && (
-                  <button
-                    onClick={() => handleDelete(item._id)}
-                    className="absolute top-1 right-1 w-6 h-6 rounded-full bg-red-500/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
-                  >
-                    <i className="fa-solid fa-trash text-xs"></i>
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Upload Form */}
- {/* Upload Form */}
       {session && (
         <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mt-2">
           <p className="text-xs font-medium text-gray-600 dark:text-gray-300 mb-2">
-            Tambah {activeTab === 'maintenance' ? 'Perbaikan' : activeTab === 'video' ? 'Video' : 'Foto'}
+            Tambah {activeTab === 'maintenance' ? 'Perbaikan' : activeTab === 'video' ? 'Video' : activeTab === 'model_3d' ? 'Model 3D' : 'Foto'}
           </p>
 
-          {/* Drag & Drop Area (multiple) */}
           <div
             className={`relative border-2 border-dashed rounded-xl p-4 transition-all ${
               isDragging
@@ -424,12 +457,14 @@ export default function BuildingMedia({
             <input
               type="file"
               ref={fileInputRef}
-              multiple // <-- multiple
+              multiple
               accept={
                 activeTab === 'video'
                   ? 'video/*'
                   : activeTab === 'maintenance'
                   ? 'application/pdf,image/*'
+                  : activeTab === 'model_3d'
+                  ? '.glb,.gltf'
                   : 'image/*,image/heic,image/heif'
               }
               onChange={handleFileChange}
@@ -463,10 +498,12 @@ export default function BuildingMedia({
                   <span className="font-medium">Seret file ke sini atau klik untuk pilih</span>
                   <p className="text-[10px] text-gray-400 mt-1">
                     {activeTab === 'video'
-                      ? 'MP4, WebM, MOV (max 100MB, otomatis dikompres ke MP4)'
+                      ? 'MP4, WebM, MOV (max 100MB)'
                       : activeTab === 'maintenance'
                       ? 'PDF, Gambar (max 100MB)'
-                      : 'JPG, PNG, GIF, WebP, HEIC (max 100MB, HEIC otomatis ke JPEG)'}
+                      : activeTab === 'model_3d'
+                      ? 'GLB, GLTF (max 100MB)'
+                      : 'JPG, PNG, GIF, WebP, HEIC (max 100MB)'}
                   </p>
                 </>
               )}
@@ -481,7 +518,6 @@ export default function BuildingMedia({
               onChange={(e) => setDescription(e.target.value)}
               className="px-3 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-[#1a1a2e] focus:outline-none focus:ring-2 focus:ring-[#00c8ff]"
             />
-
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
                 <i className="fa-solid fa-calendar-alt absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
@@ -509,6 +545,7 @@ export default function BuildingMedia({
 
           <div className="mt-3 space-y-2">
             <button
+              type="button"
               onClick={handleMultipleUpload}
               disabled={selectedFiles.length === 0 || uploading}
               className={`w-full py-2 text-xs font-medium rounded-lg transition-all ${
@@ -537,7 +574,6 @@ export default function BuildingMedia({
         </div>
       )}
 
-      {/* PREVIEW MODAL - tanpa syarat login */}
       {previewMedia && (
         <div
           className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
@@ -568,6 +604,7 @@ export default function BuildingMedia({
                 {new Date(previewMedia.timestamp).toLocaleDateString('id-ID')}
               </p>
               <button
+                type="button"
                 className="mt-2 px-4 py-2 bg-red-500 rounded hover:bg-red-600 transition"
                 onClick={() => setPreviewMedia(null)}
               >

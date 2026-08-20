@@ -45,7 +45,7 @@ export default function LoginForm({ redirectTo = "/", onSuccess }: LoginFormProp
   return (
     <div className="w-full max-w-md bg-white dark:bg-[#1a1a2e] rounded-2xl shadow-xl p-8">
       <div className="text-center mb-8">
-        <h1 className="text-2xl font-bold text-[#1a1a2e] dark:text-white">Masuk ke IlookAi</h1>
+        <h1 className="text-2xl font-bold text-[#1a1a2e] dark:text-white">Masuk ke Cipamingkis</h1>
         <p className="text-gray-500 dark:text-gray-400 mt-1">Masukkan email dan password</p>
       </div>
 
@@ -87,12 +87,7 @@ export default function LoginForm({ redirectTo = "/", onSuccess }: LoginFormProp
         </button>
       </form>
 
-      <div className="mt-6 text-center text-sm text-gray-500 dark:text-gray-400">
-        Belum punya akun?{" "}
-        <a href="/register" className="text-[#00c8ff] hover:underline">
-          Daftar di sini
-        </a>
-      </div>
+
     </div>
   );
 }

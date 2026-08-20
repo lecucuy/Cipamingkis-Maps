@@ -63,6 +63,7 @@ const CATEGORY_CONFIG: Record<string, any> = {
   "default": { icon: "fa-location-dot", color: "#00c8ff", label: "Lainnya", type: "point" },
   "BENDUNG": { icon: "fa-dam", color: "#FF6B6B", label: "Bendung", type: "point" },
   "KOLAM": { icon: "fa-water", color: "#4ECDC4", label: "Kolam", type: "point" },
+  
 };
 
 // ============ WEATHER INTERFACE ============
@@ -99,6 +100,12 @@ export default function MapWithKML() {
   const [L, setL] = useState<any>(null);
   const [turf, setTurf] = useState<any>(null);
   const legendContainerRef = useRef<HTMLDivElement | null>(null);
+  const formatLength = (meters: number) => {
+    if (meters >= 1000) {
+      return `${(meters / 1000).toFixed(1)} km`;
+    }
+    return `${Math.round(meters)} m`;
+  };
 
 useEffect(() => {
   const loadLibraries = async () => {
@@ -109,6 +116,8 @@ useEffect(() => {
   };
   loadLibraries();
 }, []);
+
+
 
 // ===== FUNGSI LOAD MEDIA PER BUILDING =====
 const loadBuildingMedia = useCallback(async (buildingId: string) => {
@@ -311,7 +320,7 @@ useEffect(() => {
     "SALURAN_DEFAULT": true,
   });
 
-  const API_URL = process.env.NEXT_PUBLIC_API_URL;
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5001/api";
 
 if (!API_URL) {
   throw new Error('NEXT_PUBLIC_API_URL belum dikonfigurasi');
@@ -344,8 +353,9 @@ if (!API_URL) {
       if (upperName.includes('BENDUNG') || fullText.includes('MERCU')) return 'BENDUNG';
       if (upperName.includes('KOLAM') || fullText.includes('OLAK')) return 'KOLAM';
     }
-    if (type === 'line') {
-      if (fullText.includes('SEMBADAN')) return 'SEMBADAN';
+   if (type === 'line') {
+      if (fullText.includes('KEJURON')) return 'SEMBADAN';  // ← tambahkan ini
+      if (fullText.includes('SEMPADAN') || fullText.includes('SEMBADAN')) return 'SEMBADAN';
       if (fullText.includes('BATAS')) return 'BATAS';
       return 'SALURAN_DEFAULT';
     }
@@ -355,6 +365,30 @@ if (!API_URL) {
     }
     return 'default';
   };
+
+  // === Load All Data
+  // Tambahkan di dalam komponen, setelah setGeoData
+const loadAllMedia = useCallback(async (points: any[]) => {
+  if (!points || points.length === 0) return;
+  
+  // Ambil semua building_id (nama point)
+  const buildingIds = points.map(p => p.name).filter(Boolean);
+  if (buildingIds.length === 0) return;
+  
+  try {
+    const res = await axios.post(`${API_URL}/buildings/media/batch`, buildingIds);
+    const mediaData = res.data?.media || {};
+    
+    // Update state buildingMedia dengan semua data sekaligus
+    setBuildingMedia(prev => ({
+      ...prev,
+      ...mediaData
+    }));
+  } catch (err) {
+    console.error('Error loading batch media:', err);
+  }
+}, [API_URL]);
+
 
   // ============ LOAD DATA ============
   useEffect(() => {
@@ -375,6 +409,7 @@ if (!API_URL) {
           const category = categorizeFeature(p.name, '', 'polygon');
           return { ...p, category, area_ha: p.area_ha || 0 };
         });
+        
         const categorizedData = {
           points: categorizedPoints,
           lines: categorizedLines,
@@ -382,6 +417,9 @@ if (!API_URL) {
         };
         setGeoData(categorizedData);
         setStationPoints(categorizedPoints);
+         // 🔥 PANGGIL LOAD ALL MEDIA
+        await loadAllMedia(categorizedPoints);
+
         if (categorizedPoints.length) {
           setActiveStation(categorizedPoints[0]);
           setActiveIdx(0);
@@ -394,6 +432,31 @@ if (!API_URL) {
     };
     loadData();
   }, []);
+
+  // Di dalam komponen, setelah state buildingMedia didefinisikan
+  useEffect(() => {
+    const cached = sessionStorage.getItem('buildingMedia');
+    const timestamp = sessionStorage.getItem('buildingMediaTimestamp');
+    
+    // Cache berlaku 5 menit (bisa disesuaikan)
+    const isExpired = !timestamp || (Date.now() - parseInt(timestamp) > 5 * 60 * 1000);
+    
+    if (cached && !isExpired) {
+      try {
+        setBuildingMedia(JSON.parse(cached));
+      } catch (e) {
+        // jika corrupt, ignore
+      }
+    }
+  }, []);
+
+  // Di MapWithKML, saat buildingMedia berubah, update sessionStorage juga
+  useEffect(() => {
+    if (Object.keys(buildingMedia).length > 0) {
+      sessionStorage.setItem('buildingMedia', JSON.stringify(buildingMedia));
+      sessionStorage.setItem('buildingMediaTimestamp', Date.now().toString());
+    }
+  }, [buildingMedia]);
 
   // ============ WEATHER SIMULATION ============
   useEffect(() => {
@@ -587,6 +650,32 @@ legend.onAdd = () => {
     }
   }, [loading, error]);
 
+
+  // ===== TOGGLE LAYER =====
+useEffect(() => {
+  window.toggleLayer = (key: string) => {
+    setLayerVisibility(prev => {
+      const newVal = !prev[key];
+      const newState = { ...prev, [key]: newVal };
+      
+      // Update peta langsung
+      if (mapRef.current && layerGroupsRef.current[key]) {
+        if (newVal) {
+          mapRef.current.addLayer(layerGroupsRef.current[key]);
+        } else {
+          mapRef.current.removeLayer(layerGroupsRef.current[key]);
+        }
+      }
+      return newState;
+    });
+  };
+  
+  return () => {
+    delete window.toggleLayer;
+  };
+}, []);
+
+
   useEffect(() => {
   if (!legendContainerRef.current) return;
   const isMobile = window.innerWidth < 640;
@@ -653,8 +742,8 @@ const renderData = useCallback(() => {
       if (category === 'LUASAN_SAWAH' && poly.area_ha) {
         popupContent += `
           <p style="margin:4px 0 0 0;font-size:12px;color:#FDD835;font-weight:bold;">
-            🌾 Luas: ${poly.area_ha.toFixed(2)} Ha
-          </p>
+          🌾 Luas: ${Math.round(poly.area_ha)} Ha
+        </p>
         `;
         // Event click untuk tampilkan di side panel
         layer.on('click', () => {
@@ -677,93 +766,121 @@ const renderData = useCallback(() => {
       if (layerVisibility[key] !== false) map.addLayer(polygonGroups[key]);
     });
 
-    // ===== LINES =====
-    const lineGroups: Record<string, L.LayerGroup> = {};
-    lines.forEach((line: any) => {
-      if (!line?.path || !Array.isArray(line.path) || line.path.length === 0) return;
-      const category = line.category || 'SALURAN_DEFAULT';
-      const cfg = CATEGORY_CONFIG[category] || CATEGORY_CONFIG['SALURAN_DEFAULT'];
-      
-      let color = cfg.color;
-      let weight = 3;
-      let dashArray = 'none';
-      
-      if (category === 'SEMBADAN') {
-        color = '#D32F2F';
-        weight = 4;
-        dashArray = '8, 6';
-      } else if (category === 'BATAS') {
-        color = '#F57C00';
-        weight = 3;
-        dashArray = '10, 8';
-      } else if (category === 'SALURAN_DEFAULT' || category === 'default') {
-        color = '#00E5FF';
-        weight = 3;
-        dashArray = 'none';
+// ===== LINES =====
+const lineGroups: Record<string, L.LayerGroup> = {};
+lines.forEach((line: any) => {
+  if (!line?.path || !Array.isArray(line.path) || line.path.length === 0) return;
+  const category = line.category || 'SALURAN_DEFAULT';
+  const cfg = CATEGORY_CONFIG[category] || CATEGORY_CONFIG['SALURAN_DEFAULT'];
+  
+  const isKejuron = line.name && line.name.toLowerCase().includes('kejuron');
+  const isSempadan = category === 'SEMBADAN';
+  
+  let color = cfg.color;
+  let weight = 3;
+  let dashArray = 'none';
+  
+  if (isKejuron) {
+    color = '#FFFFFF';
+    weight = 1;
+    dashArray = '12, 12';
+  } else if (isSempadan) {
+    // 🔥 SEMPADAN: tebal, kontras, outline putih
+    color = '#FF1744';          // merah terang
+    weight = 1;                 // tebal
+    dashArray = '10, 8';
+  } else if (category === 'BATAS') {
+    color = '#F57C00';
+    weight = 3;
+    dashArray = '10, 8';
+  } else if (category === 'SALURAN_DEFAULT' || category === 'default') {
+    color = '#00E5FF';
+    weight = 3;
+    dashArray = 'none';
+  }
+  
+  // Buat layer utama
+  const layer = L.polyline(line.path, {
+    color: color,
+    weight: weight,
+    dashArray: dashArray,
+    opacity: 0.95,
+    lineJoin: 'round',
+  });
+  
+  // Popup
+  let popupContent = `
+    <div style="font-family:Inter;min-width:150px;">
+      <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Saluran'}</h4>
+      <p style="margin:0;font-size:11px;color:#666;">${isSempadan ? 'Sempadan' : isKejuron ? 'Batas Kejuron' : cfg.label}</p>
+  `;
+  if (line.length) {
+    popupContent += `
+      <p style="margin:4px 0 0 0;font-size:12px;color:#00E5FF;font-weight:bold;">
+        📏 Panjang: ${formatLength(line.length)}
+      </p>
+    `;
+  }
+  popupContent += `</div>`;
+  layer.bindPopup(popupContent);
+  
+  // Event klik untuk sempadan (tampilkan detail di panel)
+  if (isSempadan) {
+    layer.on('click', () => {
+      const latlngs = layer.getLatLngs();
+      let totalLength = 0;
+      const segments = [];
+      for (let i = 0; i < latlngs.length - 1; i++) {
+        const dist = map.distance(latlngs[i], latlngs[i+1]);
+        totalLength += dist;
+        segments.push({ from: i+1, to: i+2, distance: dist });
       }
-      
-      const layer = L.polyline(line.path, {
-        color: color,
-        weight: weight,
-        dashArray: dashArray,
-        opacity: 0.9,
-        lineJoin: 'round',
+      setSelectedSempadan({
+        name: line.name || 'Sempadan',
+        length: totalLength,
+        segments: segments,
+        coordinates: latlngs.map((l: L.LatLng) => [l.lat, l.lng])
       });
-      
-      let popupContent = `
-        <div style="font-family:Inter;min-width:150px;">
-          <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Saluran'}</h4>
-          <p style="margin:0;font-size:11px;color:#666;">${cfg.label}</p>
-      `;
-      if (line.length) {
-        popupContent += `
-          <p style="margin:4px 0 0 0;font-size:12px;color:#00E5FF;font-weight:bold;">
-            📏 Panjang: ${line.length.toFixed(2)} m
-          </p>
-        `;
-      }
-      popupContent += `</div>`;
-      layer.bindPopup(popupContent);
-
-      // ===== EVENT KLIK UNTUK SEMPADAN =====
-      if (category === 'SEMBADAN') {
-        layer.on('click', () => {
-          const latlngs = layer.getLatLngs();
-          let totalLength = 0;
-          const segments = [];
-          for (let i = 0; i < latlngs.length - 1; i++) {
-            const from = latlngs[i];
-            const to = latlngs[i+1];
-            const dist = map.distance(from, to);
-            totalLength += dist;
-            segments.push({ from: i+1, to: i+2, distance: dist });
-          }
-          setSelectedSempadan({
-            name: line.name || 'Sempadan',
-            length: totalLength,
-            segments: segments,
-            coordinates: latlngs.map((l: L.LatLng) => [l.lat, l.lng]) // <-- Tambahkan : L.LatLng
-          });
-          if (!isPanelOpen) setIsPanelOpen(true);
-        });
-      }
-
-      // Event klik saluran biasa
-      if (category === 'SALURAN_DEFAULT' || category === 'default') {
-        layer.on('click', () => {
-          if (line.length) {
-            setSelectedSaluran({
-              name: line.name || 'Saluran',
-              length: line.length
-            });
-            if (!isPanelOpen) setIsPanelOpen(true);
-          }
-        });
-      }
-      
-      if (!lineGroups[category]) lineGroups[category] = L.layerGroup();
-      lineGroups[category].addLayer(layer);
+      if (!isPanelOpen) setIsPanelOpen(true);
     });
+  } else if (isKejuron || category === 'SALURAN_DEFAULT' || category === 'default') {
+    // Event klik untuk saluran biasa
+    layer.on('click', () => {
+      if (line.length) {
+        setSelectedSaluran({
+          name: line.name || 'Saluran',
+          length: line.length
+        });
+        if (!isPanelOpen) setIsPanelOpen(true);
+      }
+    });
+  }
+  
+  // ===== PENANGANAN KHUSUS SEMPADAN: tambahkan outline putih =====
+if (isSempadan) {
+  const outline = L.polyline(line.path, {
+    color: '#FFFFFF',
+    weight: weight + 4,
+    dashArray: dashArray,
+    opacity: 0.9,
+    lineJoin: 'round',
+    interactive: false,
+  });
+  const group = L.layerGroup([outline, layer]);
+  if (!lineGroups['SEMBADAN']) lineGroups['SEMBADAN'] = L.layerGroup();
+  lineGroups['SEMBADAN'].addLayer(group);
+  } else {
+    // Line biasa langsung masuk ke lineGroups sesuai kategori
+    if (!lineGroups[category]) lineGroups[category] = L.layerGroup();
+    lineGroups[category].addLayer(layer);
+  }
+});
+
+// Setelah loop, tambahkan semua lineGroups ke map seperti biasa
+Object.keys(lineGroups).forEach(key => {
+  layerGroupsRef.current[key] = lineGroups[key];
+  if (layerVisibility[key] !== false) map.addLayer(lineGroups[key]);
+});
     Object.keys(lineGroups).forEach(key => {
       layerGroupsRef.current[key] = lineGroups[key];
       if (layerVisibility[key] !== false) map.addLayer(lineGroups[key]);
@@ -1132,7 +1249,7 @@ points.forEach((point: any, idx: number) => {
                     </p>
                     <div className="mt-2 flex items-baseline gap-2">
                       <span className="text-2xl font-bold text-red-600 dark:text-red-400">
-                        {selectedSempadan.length.toFixed(2)}
+                        {Math.round(selectedSempadan.length)}
                       </span>
                       <span className="text-xs text-gray-500 dark:text-gray-400">meter (total)</span>
                     </div>
@@ -1142,7 +1259,7 @@ points.forEach((point: any, idx: number) => {
                         {selectedSempadan.segments.map((seg, i) => (
                           <div key={i} className="flex justify-between text-[10px] border-b border-red-100 dark:border-red-800/30 py-0.5">
                             <span>Titik {seg.from} → {seg.to}</span>
-                            <span className="font-mono text-red-600 dark:text-red-400">{seg.distance.toFixed(2)} m</span>
+                            <span className="font-mono text-red-600 dark:text-red-400">{Math.round(seg.distance)} m</span>
                           </div>
                         ))}
                       </div>
@@ -1171,7 +1288,7 @@ points.forEach((point: any, idx: number) => {
                     </p>
                     <div className="mt-2 flex items-baseline gap-2">
                       <span className="text-2xl font-bold text-yellow-600 dark:text-yellow-400">
-                        {selectedSawah.area_ha.toFixed(2)}
+                        {Math.round(selectedSawah.area_ha)}
                       </span>
                       <span className="text-xs text-gray-500 dark:text-gray-400">Hektar</span>
                     </div>
@@ -1199,9 +1316,9 @@ points.forEach((point: any, idx: number) => {
                     </p>
                     <div className="mt-2 flex items-baseline gap-2">
                       <span className="text-2xl font-bold text-cyan-600 dark:text-cyan-400">
-                        {selectedSaluran.length.toFixed(2)}
-                      </span>
-                      <span className="text-xs text-gray-500 dark:text-gray-400">meter</span>
+                      {formatLength(selectedSaluran.length)}
+                    </span>
+                    <span className="text-xs text-gray-500 dark:text-gray-400">meter</span>
                     </div>
                   </div>
                   <button
@@ -1327,7 +1444,7 @@ points.forEach((point: any, idx: number) => {
             </div> */}
 
             {/* LOG */}
-            <div className="bg-gray-50 dark:bg-[#0f0f23] rounded-xl border border-gray-200 dark:border-[#2a2a4e] p-3">
+            {/* <div className="bg-gray-50 dark:bg-[#0f0f23] rounded-xl border border-gray-200 dark:border-[#2a2a4e] p-3">
               <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Telemetry</p>
               <div className="space-y-1 font-mono text-[10px] max-h-[80px] overflow-y-auto">
                 <div className="flex gap-2">
@@ -1361,7 +1478,7 @@ points.forEach((point: any, idx: number) => {
                   </div>
                 )}
               </div>
-            </div>
+            </div> */}
           </div>
         </div>
 
@@ -1384,7 +1501,7 @@ points.forEach((point: any, idx: number) => {
         </button>
 
         {/* ===== STATUS BAR ===== */}
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[1000] bg-white/90 dark:bg-[#1a1a2e]/90 backdrop-blur-sm rounded-xl shadow-lg border border-gray-200 dark:border-[#2a2a4e] px-4 py-2 flex items-center gap-4 text-xs">
+        {/* <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[1000] bg-white/90 dark:bg-[#1a1a2e]/90 backdrop-blur-sm rounded-xl shadow-lg border border-gray-200 dark:border-[#2a2a4e] px-4 py-2 flex items-center gap-4 text-xs">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-[#00c8ff] animate-pulse"></span>
             <span className="text-gray-600 dark:text-gray-300 font-medium">LIVE</span>
@@ -1405,7 +1522,7 @@ points.forEach((point: any, idx: number) => {
               </span>
             </>
           )}
-        </div>
+        </div> */}
       </div>
     </div>
   );
