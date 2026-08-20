@@ -24,13 +24,13 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 
-
 declare global {
   interface Window {
-    toggleLayer: (key: string) => void;
+    toggleLayer?: (key: string) => void;  // <-- tambahkan ? agar optional
   }
 }
 
+// ... import dan kode lainnya
 // ... import dan kode lainnya
 ChartJS.register(
   CategoryScale,
