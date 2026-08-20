@@ -5,6 +5,12 @@ import { Canvas, useLoader } from '@react-three/fiber';
 import { OrbitControls, Environment } from '@react-three/drei';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
+declare global {
+  interface Window {
+    toggleLayer: (key: string) => void;
+  }
+}
+
 function Model({ url }: { url: string }) {
   const gltf = useLoader(GLTFLoader, url);
   return <primitive object={gltf.scene} />;
