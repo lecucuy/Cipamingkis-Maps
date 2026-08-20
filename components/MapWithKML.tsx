@@ -24,6 +24,14 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 
+
+declare global {
+  interface Window {
+    toggleLayer: (key: string) => void;
+  }
+}
+
+// ... import dan kode lainnya
 ChartJS.register(
   CategoryScale,
   LinearScale,
@@ -320,7 +328,7 @@ useEffect(() => {
     "SALURAN_DEFAULT": true,
   });
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5001/api";
+const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
 if (!API_URL) {
   throw new Error('NEXT_PUBLIC_API_URL belum dikonfigurasi');
