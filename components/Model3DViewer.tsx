@@ -7,7 +7,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 declare global {
   interface Window {
-    toggleLayer: (key: string) => void;
+    toggleLayer?: (key: string) => void;  // tambahkan ? agar optional
   }
 }
 

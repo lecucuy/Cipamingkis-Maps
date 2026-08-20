@@ -671,7 +671,7 @@ useEffect(() => {
   };
   
   return () => {
-    delete window.toggleLayer;
+    window.toggleLayer = undefined;
   };
 }, []);
 
