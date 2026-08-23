@@ -24,3 +24,125 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+
+/* Scroll snap untuk efek TikTok */
+.media-feed {
+  scroll-snap-type: y mandatory;
+  overflow-y: scroll;
+  height: 100%;
+  max-height: 600px;
+}
+.media-feed > div {
+  scroll-snap-align: start;
+}
+
+/* Animasi fade-in untuk setiap item */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.media-item {
+  animation: fadeInUp 0.4s ease-out forwards;
+}
+
+/* ===== ANIMASI FEED ===== */
+@keyframes fadeSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.media-feed-item {
+  animation: fadeSlideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* ===== SCROLL SNAP VERTIKAL ===== */
+.media-feed-container {
+  scroll-snap-type: y mandatory;
+  overflow-y: auto;
+  height: 100%;
+  max-height: 600px;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  padding: 0 4px;
+}
+.media-feed-container > * {
+  scroll-snap-align: start;
+}
+
+/* ===== CUSTOM SCROLLBAR ===== */
+.media-feed-container::-webkit-scrollbar {
+  width: 3px;
+}
+.media-feed-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+.media-feed-container::-webkit-scrollbar-thumb {
+  background: rgba(0, 200, 255, 0.3);
+  border-radius: 10px;
+}
+.media-feed-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 200, 255, 0.6);
+}
+
+/* ===== INTERAKSI SOSIAL ===== */
+.social-btn {
+  @apply flex items-center gap-1.5 text-gray-500 dark:text-gray-400 hover:text-[#00c8ff] transition-all duration-200 text-xs;
+}
+.social-btn:active {
+  transform: scale(0.9);
+}
+.social-btn.liked {
+  @apply text-red-500;
+}
+.social-btn.liked i {
+  animation: likePop 0.3s ease;
+}
+@keyframes likePop {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.4); }
+  100% { transform: scale(1); }
+}
+
+/* ===== MEDIA CARD HOVER ===== */
+.media-card {
+  @apply bg-white dark:bg-[#1a1a2e] rounded-2xl overflow-hidden shadow-sm hover:shadow-xl transition-all duration-300 border border-gray-200 dark:border-gray-700;
+}
+.media-card:hover {
+  transform: translateY(-2px);
+}
+
+/* ===== OVERLAY GRADIENT PADA GAMBAR ===== */
+.media-overlay {
+  background: linear-gradient(to bottom, transparent 50%, rgba(0,0,0,0.4) 100%);
+}
+
+/* ===== FULLSCREEN CAROUSEL ===== */
+.carousel-backdrop {
+  @apply fixed inset-0 z-[9999] bg-black/95 flex flex-col;
+  backdrop-filter: blur(8px);
+}
+.carousel-slide {
+  @apply flex-1 relative flex items-center justify-center;
+}
+.carousel-slide img,
+.carousel-slide video {
+  @apply max-h-[80vh] w-auto max-w-full object-contain;
+}
+.carousel-nav {
+  @apply absolute top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-white/20 backdrop-blur-sm text-white flex items-center justify-center hover:bg-white/30 transition-all;
+}
+.carousel-indicator {
+  @apply h-1 rounded-full transition-all duration-300;
+}

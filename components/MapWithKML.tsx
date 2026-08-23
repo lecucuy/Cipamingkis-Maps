@@ -17,8 +17,7 @@ import {
   Filler
 } from 'chart.js';
 import { Line } from 'react-chartjs-2';
-import BuildingMedia from "@/components/BuildingMedia";
-
+import BuildingMedia from "@/components/BuildingMedia"
 // 1. IMPORT CSS SECARA STATIS DI ATAS (Sangat Aman untuk Next.js / Turbopack)
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
@@ -30,8 +29,7 @@ declare global {
   }
 }
 
-// ... import dan kode lainnya
-// ... import dan kode lainnya
+
 ChartJS.register(
   CategoryScale,
   LinearScale,
@@ -71,7 +69,7 @@ const CATEGORY_CONFIG: Record<string, any> = {
   "default": { icon: "fa-location-dot", color: "#00c8ff", label: "Lainnya", type: "point" },
   "BENDUNG": { icon: "fa-dam", color: "#FF6B6B", label: "Bendung", type: "point" },
   "KOLAM": { icon: "fa-water", color: "#4ECDC4", label: "Kolam", type: "point" },
-  
+  "KEJURON": { icon: "fa-border-all", color: "#AAAAAA", label: "Batas Kejuron", type: "line" },
 };
 
 // ============ WEATHER INTERFACE ============
@@ -361,13 +359,13 @@ if (!API_URL) {
       if (upperName.includes('BENDUNG') || fullText.includes('MERCU')) return 'BENDUNG';
       if (upperName.includes('KOLAM') || fullText.includes('OLAK')) return 'KOLAM';
     }
-   if (type === 'line') {
-      if (fullText.includes('KEJURON')) return 'SEMBADAN';  // ← tambahkan ini
-      if (fullText.includes('SEMPADAN') || fullText.includes('SEMBADAN')) return 'SEMBADAN';
-      if (fullText.includes('BATAS')) return 'BATAS';
-      return 'SALURAN_DEFAULT';
-    }
-    if (type === 'polygon') {
+      if (type === 'line') {
+        if (fullText.includes('KEJURON')) return 'KEJURON';   // ← sekarang khusus
+        if (fullText.includes('SEMPADAN') || fullText.includes('SEMBADAN')) return 'SEMBADAN';
+        if (fullText.includes('BATAS')) return 'BATAS';
+        return 'SALURAN_DEFAULT';
+      }
+      if (type === 'polygon') {
       if (fullText.includes('LUASAN SAWAH') || fullText.includes('SAWAH')) return 'LUASAN_SAWAH';
       if (fullText.includes('BANJIR')) return 'BANJIR_POLY';
     }
@@ -514,9 +512,8 @@ const loadAllMedia = useCallback(async (points: any[]) => {
       }).addTo(map);
       L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-      // LEGEND
-    // LEGEND (ENHANCED)
-   // ===== LEGEND DENGAN TOMBOL CLOSE =====
+
+// ===== LEGEND DENGAN TOMBOL CLOSE =====
 const legend = L.control({ position: 'bottomleft' });
 let legendVisible = true;
 
@@ -774,68 +771,113 @@ const renderData = useCallback(() => {
       if (layerVisibility[key] !== false) map.addLayer(polygonGroups[key]);
     });
 
+
 // ===== LINES =====
 const lineGroups: Record<string, L.LayerGroup> = {};
 lines.forEach((line: any) => {
   if (!line?.path || !Array.isArray(line.path) || line.path.length === 0) return;
+
   const category = line.category || 'SALURAN_DEFAULT';
+  
+  // === HIDE SALURAN DEFAULT YANG BERNAMA "Saluran ..." ===
+  if (category === 'SALURAN_DEFAULT' && line.name && /\bsaluran\b/i.test(line.name)) {
+    return; // tidak ditampilkan
+  }
+ 
   const cfg = CATEGORY_CONFIG[category] || CATEGORY_CONFIG['SALURAN_DEFAULT'];
-  
-  const isKejuron = line.name && line.name.toLowerCase().includes('kejuron');
+
+  // ===== CEK JENIS GARIS =====
+  const isKejuron = category === 'KEJURON';
   const isSempadan = category === 'SEMBADAN';
-  
-  let color = cfg.color;
-  let weight = 3;
-  let dashArray = 'none';
-  
+
+  // ===== 1. PENANGANAN KEJURON (didahulukan) =====
   if (isKejuron) {
-    color = '#FFFFFF';
-    weight = 1;
-    dashArray = '12, 12';
-  } else if (isSempadan) {
-    // 🔥 SEMPADAN: tebal, kontras, outline putih
-    color = '#FF1744';          // merah terang
-    weight = 1;                 // tebal
-    dashArray = '10, 8';
-  } else if (category === 'BATAS') {
-    color = '#F57C00';
-    weight = 3;
-    dashArray = '10, 8';
-  } else if (category === 'SALURAN_DEFAULT' || category === 'default') {
-    color = '#00E5FF';
-    weight = 3;
-    dashArray = 'none';
-  }
-  
-  // Buat layer utama
-  const layer = L.polyline(line.path, {
-    color: color,
-    weight: weight,
-    dashArray: dashArray,
-    opacity: 0.95,
-    lineJoin: 'round',
-  });
-  
-  // Popup
-  let popupContent = `
-    <div style="font-family:Inter;min-width:150px;">
-      <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Saluran'}</h4>
-      <p style="margin:0;font-size:11px;color:#666;">${isSempadan ? 'Sempadan' : isKejuron ? 'Batas Kejuron' : cfg.label}</p>
-  `;
-  if (line.length) {
-    popupContent += `
-      <p style="margin:4px 0 0 0;font-size:12px;color:#00E5FF;font-weight:bold;">
-        📏 Panjang: ${formatLength(line.length)}
-      </p>
-    `;
-  }
-  popupContent += `</div>`;
-  layer.bindPopup(popupContent);
-  
-  // Event klik untuk sempadan (tampilkan detail di panel)
-  if (isSempadan) {
+    // Garis abu-abu, putus-putus, tipis, transparan
+    const color = '#AAAAAA';
+    const weight = 1.5;
+    const dashArray = '2, 6';
+    const opacity = 0.3;
+
+    const layer = L.polyline(line.path, {
+      color: color,
+      weight: weight,
+      dashArray: dashArray,
+      opacity: opacity,
+      lineJoin: 'round',
+    });
+
+    // Popup dengan tanda silang (✕)
+    layer.bindPopup(`
+      <div style="font-family:Inter;min-width:150px;">
+        <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Kejuron'}</h4>
+        <p style="margin:0;font-size:11px;color:#666;">✕ Batas Kejuron</p>
+        ${line.length ? `<p style="margin:4px 0 0 0;font-size:12px;color:#AAAAAA;font-weight:bold;">📏 Panjang: ${formatLength(line.length)}</p>` : ''}
+      </div>
+    `);
+
+    // Klik: tampilkan panjang di panel
     layer.on('click', () => {
-      const latlngs = layer.getLatLngs();
+      if (line.length) {
+        setSelectedSaluran({
+          name: line.name || 'Kejuron',
+          length: line.length
+        });
+        if (!isPanelOpen) setIsPanelOpen(true);
+      }
+    });
+
+    if (!lineGroups['KEJURON']) lineGroups['KEJURON'] = L.layerGroup();
+    lineGroups['KEJURON'].addLayer(layer);
+    return; // selesai untuk kejuron
+  }
+
+  // ===== 2. PENANGANAN SEMPADAN =====
+  if (isSempadan) {
+    const dash = '4, 4';
+    const mainColor = '#FF0000';
+    const glowColor = '#FF0000';
+    const outlineColor = '#FFFFFF';
+
+    // Glow sangat tipis dan transparan
+    const glow = L.polyline(line.path, {
+      color: glowColor,
+      weight: 6,
+      dashArray: dash,
+      opacity: 0.05,
+      lineJoin: 'round',
+      interactive: false,
+    });
+
+    // Outline putih tipis
+    const outline = L.polyline(line.path, {
+      color: outlineColor,
+      weight: 3,
+      dashArray: dash,
+      opacity: 0.2,
+      lineJoin: 'round',
+      interactive: false,
+    });
+
+    // Garis utama merah, tipis, transparan
+    const mainLine = L.polyline(line.path, {
+      color: mainColor,
+      weight: 2,
+      dashArray: dash,
+      opacity: 0.15,
+      lineJoin: 'round',
+    });
+
+    // Hover: jadi lebih terlihat
+    mainLine.on('mouseover', function () {
+      this.setStyle({ weight: 3, opacity: 0.7 });
+    });
+    mainLine.on('mouseout', function () {
+      this.setStyle({ weight: 2, opacity: 0.15 });
+    });
+
+    // Klik: tampilkan detail dan zoom
+    mainLine.on('click', function () {
+      const latlngs = this.getLatLngs();
       let totalLength = 0;
       const segments = [];
       for (let i = 0; i < latlngs.length - 1; i++) {
@@ -850,39 +892,69 @@ lines.forEach((line: any) => {
         coordinates: latlngs.map((l: L.LatLng) => [l.lat, l.lng])
       });
       if (!isPanelOpen) setIsPanelOpen(true);
+      map.fitBounds(this.getBounds(), { padding: [50, 50] });
     });
-  } else if (isKejuron || category === 'SALURAN_DEFAULT' || category === 'default') {
-    // Event klik untuk saluran biasa
-    layer.on('click', () => {
-      if (line.length) {
-        setSelectedSaluran({
-          name: line.name || 'Saluran',
-          length: line.length
-        });
-        if (!isPanelOpen) setIsPanelOpen(true);
-      }
-    });
+
+    const group = L.layerGroup([glow, outline, mainLine]);
+    if (!lineGroups['SEMBADAN']) lineGroups['SEMBADAN'] = L.layerGroup();
+    lineGroups['SEMBADAN'].addLayer(group);
+    return; // selesai untuk sempadan
   }
-  
-  // ===== PENANGANAN KHUSUS SEMPADAN: tambahkan outline putih =====
-if (isSempadan) {
-  const outline = L.polyline(line.path, {
-    color: '#FFFFFF',
-    weight: weight + 4,
+
+  // ===== 3. GARIS LAINNYA (BATAS, SALURAN_DEFAULT, dll) =====
+  let color = cfg.color;
+  let weight = 3;
+  let dashArray = 'none';
+  let opacity = 0.95;
+
+  if (category === 'BATAS') {
+    color = '#F57C00';
+    weight = 3;
+    dashArray = '10, 8';
+  } else if (category === 'SALURAN_DEFAULT' || category === 'default') {
+    color = '#00E5FF';
+    weight = 3;
+    dashArray = 'none';
+  }
+
+  const layer = L.polyline(line.path, {
+    color: color,
+    weight: weight,
     dashArray: dashArray,
-    opacity: 0.9,
+    opacity: opacity,
     lineJoin: 'round',
-    interactive: false,
   });
-  const group = L.layerGroup([outline, layer]);
-  if (!lineGroups['SEMBADAN']) lineGroups['SEMBADAN'] = L.layerGroup();
-  lineGroups['SEMBADAN'].addLayer(group);
-  } else {
-    // Line biasa langsung masuk ke lineGroups sesuai kategori
-    if (!lineGroups[category]) lineGroups[category] = L.layerGroup();
-    lineGroups[category].addLayer(layer);
+
+  // Popup
+  let popupContent = `
+    <div style="font-family:Inter;min-width:150px;">
+      <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Saluran'}</h4>
+      <p style="margin:0;font-size:11px;color:#666;">${cfg.label}</p>
+  `;
+  if (line.length) {
+    popupContent += `
+      <p style="margin:4px 0 0 0;font-size:12px;color:#00E5FF;font-weight:bold;">
+        📏 Panjang: ${formatLength(line.length)}
+      </p>
+    `;
   }
+  popupContent += `</div>`;
+  layer.bindPopup(popupContent);
+
+  layer.on('click', () => {
+    if (line.length) {
+      setSelectedSaluran({
+        name: line.name || 'Saluran',
+        length: line.length
+      });
+      if (!isPanelOpen) setIsPanelOpen(true);
+    }
+  });
+
+  if (!lineGroups[category]) lineGroups[category] = L.layerGroup();
+  lineGroups[category].addLayer(layer);
 });
+
 
 // Setelah loop, tambahkan semua lineGroups ke map seperti biasa
 Object.keys(lineGroups).forEach(key => {
@@ -1219,10 +1291,10 @@ points.forEach((point: any, idx: number) => {
                   <div>
                     <h3 className="font-semibold text-[#1a1a2e] dark:text-white text-sm">{activeStation.name}</h3>
                     <p className="text-xs text-gray-500 dark:text-gray-400">{activeStation.description || 'Stasiun'}</p>
-                    <p className="text-xs mt-1" style={{ color: CATEGORY_CONFIG[activeStation.category]?.color || '#666' }}>
+                    {/* <p className="text-xs mt-1" style={{ color: CATEGORY_CONFIG[activeStation.category]?.color || '#666' }}>
                       <i className={`fa-solid ${CATEGORY_CONFIG[activeStation.category]?.icon || 'fa-location-dot'}`}></i> 
                       {CATEGORY_CONFIG[activeStation.category]?.label || 'Lainnya'}
-                    </p>
+                    </p> */}
                   </div>
                   <span className="px-2 py-1 bg-[#00c8ff]/10 text-[#00c8ff] rounded-lg text-[10px] font-mono font-medium">ACTIVE</span>
                 </div>

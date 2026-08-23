@@ -2,7 +2,7 @@
 import NextAuth, { type NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5001/api";
+const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
 const secret = process.env.NEXTAUTH_SECRET;
 

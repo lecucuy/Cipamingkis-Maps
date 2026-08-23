@@ -1,3 +1,4 @@
+//components/BuildingMedia.tsx
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
@@ -6,7 +7,7 @@ import axios from 'axios';
 import imageCompression from 'browser-image-compression';
 import Model3DViewer from '@/components/Model3DViewer';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5001/api";
+const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
 interface MediaItem {
   _id: string;
@@ -46,6 +47,8 @@ export default function BuildingMedia({
   const [uploadIndex, setUploadIndex] = useState(0);
   const [totalProgress, setTotalProgress] = useState(0);
   const [selectedModelUrl, setSelectedModelUrl] = useState<string | null>(null);
+  const [currentMediaIndex, setCurrentMediaIndex] = useState(0);
+  const [isCarouselMode, setIsCarouselMode] = useState(false);
 
   // ===== LOAD MEDIA (via batch) =====
   const loadMedia = useCallback(async () => {
@@ -351,82 +354,134 @@ export default function BuildingMedia({
             </p>
           )}
         </div>
-      ) : (
-        <div className="max-h-64 overflow-y-auto pr-1 space-y-2 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600">
-          {loading ? (
-            <div className="flex justify-center py-4">
-              <div className="w-6 h-6 border-2 border-[#00c8ff] border-t-transparent rounded-full animate-spin"></div>
-            </div>
-          ) : filtered.length === 0 ? (
-            <p className="text-xs text-gray-400 text-center py-4">
-              Belum ada {activeTab === 'photo' ? 'foto' : activeTab === 'video' ? 'video' : 'riwayat perbaikan'}
-            </p>
-          ) : (
-            <div className="grid grid-cols-2 gap-2">
-              {filtered.map((item) => (
-                <div
-                  key={item._id}
-                  className="relative group bg-white dark:bg-[#1a1a2e] rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow border border-gray-200 dark:border-gray-700"
-                >
-                  <div className="absolute top-1 left-1 z-10 bg-black/60 text-white text-[8px] px-1.5 py-0.5 rounded flex items-center gap-1">
-                    {item.media_type === 'photo' && '📷'}
-                    {item.media_type === 'video' && '🎥'}
-                    {item.media_type === 'maintenance' && '🔧'}
-                  </div>
+            ) : (
+  <div className="media-feed-container space-y-4 pb-2">
+    {loading ? (
+      <div className="flex justify-center py-8">
+        <div className="w-8 h-8 border-3 border-[#00c8ff] border-t-transparent rounded-full animate-spin"></div>
+      </div>
+    ) : filtered.length === 0 ? (
+      <div className="text-center py-8 text-gray-400 dark:text-gray-500">
+        <i className="fa-regular fa-face-frown text-3xl block mb-2"></i>
+        <p className="text-sm">Belum ada {activeTab === 'photo' ? 'foto' : activeTab === 'video' ? 'video' : 'riwayat perbaikan'}</p>
+        <p className="text-xs">Upload sekarang untuk berbagi momen!</p>
+      </div>
+    ) : (
+      filtered.map((item, index) => {
+        const isVideo = item.file_type === 'videos' || item.file_type === 'video';
+        const isImage = item.file_type === 'images' || item.file_type === 'image';
+        const isDocument = !isVideo && !isImage;
 
-                  {(item.file_type === 'images' || item.file_type === 'image') && (
-                    <img
-                      src={item.file_url}
-                      alt={item.description || 'Media'}
-                      className="w-full h-32 object-cover cursor-pointer"
-                      onClick={() => setPreviewMedia(item)}
-                    />
-                  )}
-                  {(item.file_type === 'videos' || item.file_type === 'video') && (
-                    <video
-                      src={item.file_url}
-                      className="w-full h-40 object-cover rounded-t-lg cursor-pointer"
-                      controls
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setPreviewMedia(item);
-                      }}
-                    />
-                  )}
-                  {(item.file_type === 'documents' || item.file_type === 'document') && (
-                    <div className="w-full h-24 flex items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-400">
-                      <i className="fa-solid fa-file-pdf text-3xl"></i>
-                    </div>
-                  )}
-                  {!['images','image','videos','video','documents','document'].includes(item.file_type) && (
-                    <div className="w-full h-24 flex items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-400">
-                      <i className="fa-solid fa-file text-3xl"></i>
-                    </div>
-                  )}
-
-                  <div className="p-2">
-                    <p className="text-xs font-medium truncate text-gray-700 dark:text-gray-300">
-                      {item.description || 'Tanpa deskripsi'}
-                    </p>
-                    <p className="text-[10px] text-gray-400">
-                      {item.timestamp ? new Date(item.timestamp).toLocaleDateString('id-ID') : '-'}
-                    </p>
-                  </div>
-
-                  {session && (
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(item._id)}
-                      className="absolute top-1 right-1 w-6 h-6 rounded-full bg-red-500/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
-                    >
-                      <i className="fa-solid fa-trash text-xs"></i>
-                    </button>
-                  )}
+        return (
+          <div
+            key={item._id}
+            className="media-feed-item media-card group"
+            style={{ animationDelay: `${index * 0.05}s` }}
+          >
+            {/* ===== MEDIA AREA ===== */}
+            <div className="relative bg-black/5 dark:bg-black/20">
+              {isImage && (
+                <img
+                  src={item.file_url}
+                  alt={item.description || 'Media'}
+                  className="w-full max-h-[500px] object-contain cursor-pointer bg-gray-50 dark:bg-gray-900 transition-transform duration-300 group-hover:scale-[1.01]"
+                  onClick={() => {
+                    setCurrentMediaIndex(index);
+                    setIsCarouselMode(true);
+                  }}
+                  loading="lazy"
+                />
+              )}
+              {isVideo && (
+                <video
+                  src={item.file_url}
+                  className="w-full max-h-[500px] object-contain rounded-t-2xl cursor-pointer bg-black"
+                  controls
+                  playsInline
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCurrentMediaIndex(index);
+                    setIsCarouselMode(true);
+                  }}
+                />
+              )}
+              {isDocument && (
+                <div className="w-full h-48 flex flex-col items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-400 cursor-pointer" onClick={() => window.open(item.file_url, '_blank')}>
+                  <i className="fa-solid fa-file-pdf text-5xl mb-2"></i>
+                  <span className="text-sm font-medium">{item.file_type || 'Dokumen'}</span>
+                  <span className="text-xs">Klik untuk buka</span>
                 </div>
-              ))}
+              )}
+
+              {/* ===== BADGE ===== */}
+              <div className="absolute top-3 left-3 z-10 bg-black/50 backdrop-blur-sm text-white text-[10px] px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-lg">
+                {item.media_type === 'photo' && '📷 Foto'}
+                {item.media_type === 'video' && '🎥 Video'}
+                {item.media_type === 'maintenance' && '🔧 Perbaikan'}
+              </div>
+
+              {/* ===== INDEX ===== */}
+              <div className="absolute bottom-3 right-3 z-10 bg-black/40 backdrop-blur-sm text-white text-[10px] px-2.5 py-1 rounded-full">
+                {index + 1} / {filtered.length}
+              </div>
+
+              {/* ===== TOMBOL HAPUS ===== */}
+              {session && (
+                <button
+                  type="button"
+                  onClick={() => handleDelete(item._id)}
+                  className="absolute top-3 right-3 z-10 w-8 h-8 rounded-full bg-red-500/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600 shadow-lg"
+                >
+                  <i className="fa-solid fa-trash text-xs"></i>
+                </button>
+              )}
             </div>
-          )}
-        </div>
+
+            {/* ===== DESKRIPSI & METADATA ===== */}
+            <div className="p-3 space-y-1.5">
+              <p className="text-sm font-medium text-gray-800 dark:text-white line-clamp-2">
+                {item.description || 'Tanpa deskripsi'}
+              </p>
+              <div className="flex items-center gap-3 text-[10px] text-gray-500 dark:text-gray-400">
+                <span className="flex items-center gap-1">
+                  <i className="fa-regular fa-calendar"></i>
+                  {item.timestamp
+                    ? new Date(item.timestamp).toLocaleDateString('id-ID', {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })
+                    : '-'}
+                </span>
+                <span className="w-1 h-1 rounded-full bg-gray-300 dark:bg-gray-600"></span>
+                <span className="flex items-center gap-1">
+                  <i className="fa-regular fa-clock"></i>
+                  {new Date(item.created_at).toLocaleDateString('id-ID', {
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric',
+                  })}
+                </span>
+              </div>
+
+              {/* ===== SOCIAL INTERACTIONS ===== */}
+              <div className="flex items-center gap-4 pt-2 border-t border-gray-100 dark:border-gray-800 mt-1.5">
+                <button className="social-btn group" onClick={() => { /* like logic */ }}>
+                  <i className="fa-regular fa-heart text-base group-hover:scale-110 transition-transform"></i>
+                  <span className="tabular-nums"></span>
+                </button>
+                <button className="social-btn ml-auto" onClick={() => { /* share logic */ }}>
+                  <i className="fa-regular fa-share-from-square text-base"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })
+    )}
+  </div>
       )}
 
       {session && (
@@ -529,7 +584,7 @@ export default function BuildingMedia({
                   placeholder="Pilih tanggal & waktu"
                 />
               </div>
-              <button
+              {/* <button
                 type="button"
                 onClick={() => {
                   const now = new Date();
@@ -539,7 +594,7 @@ export default function BuildingMedia({
                 className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition whitespace-nowrap"
               >
                 Sekarang
-              </button>
+              </button> */}
             </div>
           </div>
 
