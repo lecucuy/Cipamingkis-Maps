@@ -868,37 +868,37 @@ lines.forEach((line: any) => {
     });
 
     // Hover: jadi lebih terlihat
-    mainLine.on('mouseover', function (e) {
-      e.target.setStyle({ weight: 3, opacity: 0.7 });
+// Perbaiki event handler dengan tipe eksplisit
+  mainLine.on('mouseover', function (e: any) {
+    e.target.setStyle({ weight: 3, opacity: 0.7 });
+  });
+  mainLine.on('mouseout', function (e: any) {
+    e.target.setStyle({ weight: 2, opacity: 0.15 });
+  });
+  mainLine.on('click', function (e: any) {
+    const latlngs = e.target.getLatLngs();
+    let totalLength = 0;
+    const segments: { from: number; to: number; distance: number }[] = [];
+    for (let i = 0; i < latlngs.length - 1; i++) {
+      const dist = map.distance(latlngs[i], latlngs[i + 1]);
+      totalLength += dist;
+      segments.push({ from: i + 1, to: i + 2, distance: dist });
+    }
+    setSelectedSempadan({
+      name: line.name || 'Sempadan',
+      length: totalLength,
+      segments: segments,
+      coordinates: latlngs.map((l: L.LatLng) => [l.lat, l.lng]),
     });
-    mainLine.on('mouseout', function (e) {
-      e.target.setStyle({ weight: 2, opacity: 0.15 });
-    });
+    if (!isPanelOpen) setIsPanelOpen(true);
+    map.fitBounds(e.target.getBounds(), { padding: [50, 50] });
+  });
 
-    // Klik: tampilkan detail dan zoom
-    mainLine.on('click', function (e) {
-      const latlngs = e.target.getLatLngs();
-      let totalLength = 0;
-      const segments = [];
-      for (let i = 0; i < latlngs.length - 1; i++) {
-        const dist = map.distance(latlngs[i], latlngs[i+1]);
-        totalLength += dist;
-        segments.push({ from: i+1, to: i+2, distance: dist });
-      }
-      setSelectedSempadan({
-        name: line.name || 'Sempadan',
-        length: totalLength,
-        segments: segments,
-        coordinates: latlngs.map((l: L.LatLng) => [l.lat, l.lng])
-      });
-      if (!isPanelOpen) setIsPanelOpen(true);
-      map.fitBounds(e.target.getBounds(), { padding: [50, 50] });
-    });
+  const group = L.layerGroup([glow, outline, mainLine]);
+  if (!lineGroups['SEMBADAN']) lineGroups['SEMBADAN'] = L.layerGroup();
+  lineGroups['SEMBADAN'].addLayer(group);
+  return; // selesai untuk sempadan
 
-    const group = L.layerGroup([glow, outline, mainLine]);
-    if (!lineGroups['SEMBADAN']) lineGroups['SEMBADAN'] = L.layerGroup();
-    lineGroups['SEMBADAN'].addLayer(group);
-    return; // selesai untuk sempadan
   }
 
   // ===== 3. GARIS LAINNYA (BATAS, SALURAN_DEFAULT, dll) =====
