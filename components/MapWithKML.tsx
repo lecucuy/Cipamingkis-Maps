@@ -868,16 +868,16 @@ lines.forEach((line: any) => {
     });
 
     // Hover: jadi lebih terlihat
-    mainLine.on('mouseover', function () {
-      this.setStyle({ weight: 3, opacity: 0.7 });
+    mainLine.on('mouseover', function (e) {
+      e.target.setStyle({ weight: 3, opacity: 0.7 });
     });
-    mainLine.on('mouseout', function () {
-      this.setStyle({ weight: 2, opacity: 0.15 });
+    mainLine.on('mouseout', function (e) {
+      e.target.setStyle({ weight: 2, opacity: 0.15 });
     });
 
     // Klik: tampilkan detail dan zoom
-    mainLine.on('click', function () {
-      const latlngs = this.getLatLngs();
+    mainLine.on('click', function (e) {
+      const latlngs = e.target.getLatLngs();
       let totalLength = 0;
       const segments = [];
       for (let i = 0; i < latlngs.length - 1; i++) {
@@ -892,7 +892,7 @@ lines.forEach((line: any) => {
         coordinates: latlngs.map((l: L.LatLng) => [l.lat, l.lng])
       });
       if (!isPanelOpen) setIsPanelOpen(true);
-      map.fitBounds(this.getBounds(), { padding: [50, 50] });
+      map.fitBounds(e.target.getBounds(), { padding: [50, 50] });
     });
 
     const group = L.layerGroup([glow, outline, mainLine]);
