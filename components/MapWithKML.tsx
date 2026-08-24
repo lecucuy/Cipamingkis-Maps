@@ -1265,7 +1265,7 @@ points.forEach((point: any, idx: number) => {
         <div className={`
               fixed 
               ${isPanelOpen ? 'bottom-0' : 'bottom-[-70%]'} 
-              left-0 
+              right-0 
               w-full 
               h-[60vh]           // tinggi 60% layar di HP
               sm:right-0 sm:top-0 sm:bottom-auto sm:h-full sm:w-[420px] sm:translate-x-0
