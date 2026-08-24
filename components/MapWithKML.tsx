@@ -145,46 +145,74 @@ const loadBuildingMedia = useCallback(async (buildingId: string) => {
 }, [buildingMedia, loadingMedia]);
 
 // ===== FUNGSI BUAT ICON MARKER DENGAN THUMBNAIL =====
+// ===== FUNGSI BUAT ICON MARKER DENGAN THUMBNAIL + LABEL =====
 const getMarkerIcon = useCallback((point: any, media: any[] = []) => {
   if (!L) return null;
   const cfg = CATEGORY_CONFIG[point.category] || CATEGORY_CONFIG['default'];
   const hasPhoto = media.some(m => m.media_type === 'photo' || m.media_type === 'video');
 
-  let iconHtml = '';
+  // Batasi panjang label
+  const label = point.name.length > 15 ? point.name.slice(0, 12) + '…' : point.name;
   const baseStyle = `width:36px;height:36px;border-radius:50%;display:flex;justify-content:center;align-items:center;font-size:16px;cursor:pointer;`;
+
+  let iconHtml = '';
 
   if (hasPhoto) {
     const firstMedia = media.find(m => m.media_type === 'photo' || m.media_type === 'video');
     iconHtml = `
-      <div style="width:40px;height:40px;border-radius:50%;overflow:hidden;border:2px solid ${cfg.color};box-shadow:0 2px 8px rgba(0,0,0,0.3);cursor:pointer;background:#fff;display:flex;align-items:center;justify-content:center;position:relative;">
-        <img src="${firstMedia?.file_url || ''}" style="width:100%;height:100%;object-fit:cover;" />
-        <div style="position:absolute;bottom:-4px;right:-4px;background:#00c8ff;color:#fff;border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:9px;border:2px solid #fff;">
-          <i class="fa-solid fa-camera"></i>
+      <div style="position:relative;text-align:center;">
+        <div style="width:40px;height:40px;border-radius:50%;overflow:hidden;border:2px solid ${cfg.color};box-shadow:0 2px 8px rgba(0,0,0,0.3);cursor:pointer;background:#fff;display:flex;align-items:center;justify-content:center;position:relative;">
+          <img src="${firstMedia?.file_url || ''}" style="width:100%;height:100%;object-fit:cover;" />
+          <div style="position:absolute;bottom:-4px;right:-4px;background:#00c8ff;color:#fff;border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:9px;border:2px solid #fff;">
+            <i class="fa-solid fa-camera"></i>
+          </div>
+        </div>
+        <div style="font-size:8px;font-weight:600;color:#1a1a2e;background:rgba(255,255,255,0.85);padding:0 4px;border-radius:4px;margin-top:2px;white-space:nowrap;max-width:60px;overflow:hidden;text-overflow:ellipsis;box-shadow:0 1px 4px rgba(0,0,0,0.1);">
+          ${label}
         </div>
       </div>
     `;
     return L.divIcon({
       className: 'custom-div-icon',
       html: iconHtml,
-      iconSize: [40, 40],
-      iconAnchor: [20, 20],
-      popupAnchor: [0, -20],
+      iconSize: [40, 56],
+      iconAnchor: [20, 28],
+      popupAnchor: [0, -28],
     });
   }
 
   if (point.category === 'BANGUNAN_LIAR') {
     iconHtml = `
-      <div style="${baseStyle}background:#E64A19;color:white;border:2px solid #fff;box-shadow:0 2px 12px rgba(230,74,25,0.4);font-size:18px;">
-        <i class="fa-solid fa-user"></i>
+      <div style="position:relative;text-align:center;">
+        <div style="${baseStyle}background:#E64A19;color:white;border:2px solid #fff;box-shadow:0 2px 12px rgba(230,74,25,0.4);font-size:18px;">
+          <i class="fa-solid fa-user"></i>
+        </div>
+        <div style="font-size:8px;font-weight:600;color:#1a1a2e;background:rgba(255,255,255,0.85);padding:0 4px;border-radius:4px;margin-top:2px;white-space:nowrap;max-width:60px;overflow:hidden;text-overflow:ellipsis;box-shadow:0 1px 4px rgba(0,0,0,0.1);">
+          ${label}
+        </div>
       </div>
     `;
-  } else if (point.category === 'BANJIR') {
+    return L.divIcon({
+      className: 'custom-div-icon',
+      html: iconHtml,
+      iconSize: [36, 50],
+      iconAnchor: [18, 25],
+      popupAnchor: [0, -25],
+    });
+  }
+
+  if (point.category === 'BANJIR') {
     iconHtml = `
-      <div style="${baseStyle}background:#1E88E5;color:white;border:2px solid #fff;box-shadow:0 2px 12px rgba(30,136,229,0.5);animation:pulse-banjir 1.5s infinite;">
-        <i class="fa-solid fa-triangle-exclamation"></i>
+      <div style="position:relative;text-align:center;">
+        <div style="${baseStyle}background:#1E88E5;color:white;border:2px solid #fff;box-shadow:0 2px 12px rgba(30,136,229,0.5);animation:pulse-banjir 1.5s infinite;">
+          <i class="fa-solid fa-triangle-exclamation"></i>
+        </div>
+        <div style="font-size:8px;font-weight:600;color:#1a1a2e;background:rgba(255,255,255,0.85);padding:0 4px;border-radius:4px;margin-top:2px;white-space:nowrap;max-width:60px;overflow:hidden;text-overflow:ellipsis;box-shadow:0 1px 4px rgba(0,0,0,0.1);">
+          ${label}
+        </div>
       </div>
     `;
-    // tambahkan keyframe jika belum
+    // Tambahkan keyframe jika belum
     if (!document.getElementById('banjir-style')) {
       const style = document.createElement('style');
       style.id = 'banjir-style';
@@ -197,20 +225,33 @@ const getMarkerIcon = useCallback((point: any, media: any[] = []) => {
       `;
       document.head.appendChild(style);
     }
-  } else {
-    iconHtml = `
+    return L.divIcon({
+      className: 'custom-div-icon',
+      html: iconHtml,
+      iconSize: [36, 50],
+      iconAnchor: [18, 25],
+      popupAnchor: [0, -25],
+    });
+  }
+
+  // Default marker (semua kategori lain)
+  iconHtml = `
+    <div style="position:relative;text-align:center;">
       <div style="${baseStyle}background:#ffffff;color:${cfg.color};border:2px solid ${cfg.color};box-shadow:0 2px 12px rgba(0,0,0,0.25);">
         <i class="fa-solid ${cfg.icon}"></i>
       </div>
-    `;
-  }
+      <div style="font-size:8px;font-weight:600;color:#1a1a2e;background:rgba(255,255,255,0.85);padding:0 4px;border-radius:4px;margin-top:2px;white-space:nowrap;max-width:60px;overflow:hidden;text-overflow:ellipsis;box-shadow:0 1px 4px rgba(0,0,0,0.1);">
+        ${label}
+      </div>
+    </div>
+  `;
 
   return L.divIcon({
     className: 'custom-div-icon',
     html: iconHtml,
-    iconSize: [36, 36],
-    iconAnchor: [18, 18],
-    popupAnchor: [0, -18],
+    iconSize: [36, 50],
+    iconAnchor: [18, 25],
+    popupAnchor: [0, -25],
   });
 }, [L]);
 
@@ -1221,7 +1262,24 @@ points.forEach((point: any, idx: number) => {
         </div>
 
         {/* ===== SIDE PANEL ===== */}
-        <div className={`fixed right-0 top-0 h-full w-full sm:w-[420px] bg-white/95 dark:bg-[#1a1a2e]/95 backdrop-blur-xl border-l border-gray-200 dark:border-[#2a2a4e] shadow-2xl transition-all duration-300 z-[999] ${isPanelOpen ? 'translate-x-0' : 'translate-x-full'} flex flex-col`}>
+        <div className={`
+              fixed 
+              ${isPanelOpen ? 'bottom-0' : 'bottom-[-70%]'} 
+              left-0 
+              w-full 
+              h-[60vh]           // tinggi 60% layar di HP
+              sm:right-0 sm:top-0 sm:bottom-auto sm:h-full sm:w-[420px] sm:translate-x-0
+              transition-all duration-300
+              z-[999]
+              bg-white/95 dark:bg-[#1a1a2e]/95 backdrop-blur-xl
+              border-t sm:border-l border-gray-200 dark:border-[#2a2a4e]
+              shadow-2xl
+              flex flex-col
+              rounded-t-2xl sm:rounded-none
+            `}>
+          <div className="flex justify-center pt-2 sm:hidden">
+          <div className="w-12 h-1.5 rounded-full bg-gray-300 dark:bg-gray-600"></div>
+        </div>
           {/* Header Panel */}
           <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-[#2a2a4e] flex-shrink-0">
             <div className="flex items-center gap-2">
@@ -1566,18 +1624,21 @@ points.forEach((point: any, idx: number) => {
         <button
           onClick={() => setIsPanelOpen(!isPanelOpen)}
           className={`
-            fixed top-1/2 -translate-y-1/2 z-[1000] 
-            w-8 h-12 rounded-l-lg 
+            fixed 
+            z-[1000]
+            ${isPanelOpen ? 'hidden' : 'flex'}
+            bottom-6 left-1/2 -translate-x-1/2   // di HP: tengah bawah
+            sm:top-1/2 sm:right-0 sm:left-auto sm:translate-y-[-50%] sm:translate-x-0
+            w-12 h-12 sm:w-8 sm:h-12
+            rounded-full sm:rounded-l-lg
             bg-white dark:bg-[#1a1a2e] 
             border border-gray-200 dark:border-[#2a2a4e]
             shadow-lg hover:shadow-xl transition-all
-            flex items-center justify-center
+            items-center justify-center
             text-gray-600 dark:text-gray-400
-            ${isPanelOpen ? 'hidden' : 'flex'}
-            right-0
           `}
         >
-          <i className="fa-solid fa-chevron-left"></i>
+          <i className={`fa-solid ${isPanelOpen ? 'fa-chevron-right' : 'fa-chevron-up'} sm:fa-chevron-left`}></i>
         </button>
 
         {/* ===== STATUS BAR ===== */}
