@@ -42,7 +42,7 @@ export const authOptions: NextAuthOptions = {
       },
     }),
   ],
-// app/api/auth/[...nextauth]/route.ts
+
 
 callbacks: {
   async jwt({ token, user }) {
