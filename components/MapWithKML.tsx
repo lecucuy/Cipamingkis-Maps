@@ -712,7 +712,7 @@ useEffect(() => {
             fillOpacity: 0.15,
             fillColor: '#8B5CF6',
           },
-          onEachFeature: (feature, layer) => {
+           onEachFeature: (feature: any, layer: any) => {
             // Ambil nama desa dari properti (jika ada)
             const name = feature.properties?.name || 
                         feature.properties?.NAMA_DESA || 
