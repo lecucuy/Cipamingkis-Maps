@@ -1,4 +1,4 @@
-//frontend/components/LoginFrom.tsx
+// frontend/components/LoginForm.tsx
 'use client';
 
 import { useState } from "react";
@@ -87,7 +87,10 @@ export default function LoginForm({ redirectTo = "/", onSuccess }: LoginFormProp
         </button>
       </form>
 
-
+      {/* TAMBAHKAN INI */}
+      <p className="text-center text-sm text-gray-500 dark:text-gray-400 mt-4">
+        Belum punya akun? <a href="/register" className="text-[#00c8ff] hover:underline">Daftar</a>
+      </p>
     </div>
   );
 }

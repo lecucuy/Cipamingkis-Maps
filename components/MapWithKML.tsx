@@ -21,7 +21,7 @@ import BuildingMedia from "@/components/BuildingMedia";
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
-
+import * as Esri from 'esri-leaflet';
 // MODUL HASHTAG
 import { extractHashtags } from '@/utils/hashtagHelpers';
 import { useHashtagFilter } from '@/hooks/useHashtagFilter';
@@ -74,7 +74,13 @@ export const CATEGORY_CONFIG: Record<string, any> = {
   "BENDUNG": { icon: "fa-dam", color: "#FF6B6B", label: "Bendung", type: "point" },
   "KOLAM": { icon: "fa-water", color: "#4ECDC4", label: "Kolam", type: "point" },
   "KEJURON": { icon: "fa-border-all", color: "#AAAAAA", label: "Batas Kejuron", type: "line" },
-};
+"BATAS_DESA": {
+  icon: "fa-house",
+  color: "#8B5CF6",
+  label: "Desa/Kelurahan",
+  type: "polygon"
+}
+ };
 
 interface WeatherData {
   temperature: number;
@@ -108,10 +114,15 @@ export default function MapWithKML() {
   const [L, setL] = useState<any>(null);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const { data: session } = useSession();
+  const [villageGeo, setVillageGeo] = useState<any>(null);
+  const [villageLoading, setVillageLoading] = useState(false);
+  const [villageError, setVillageError] = useState<string | null>(null);
+
   const API_URL = process.env.NEXT_PUBLIC_API_URL;
   if (!API_URL) throw new Error('NEXT_PUBLIC_API_URL belum dikonfigurasi');
   // HOOK HASHTAG
   const { tagFilter, setTagFilter, filteredPoints, filteredLines, filteredPolygons, allTags } = useHashtagFilter(geoData);
+  // State untuk data batas desa
 
   // ===== FUNGSI FORMAT =====
   const formatLength = (meters: number) => {
@@ -140,6 +151,33 @@ useEffect(() => {
   };
   loadLibraries();
 }, []);
+
+
+
+
+// Fetch data desa
+useEffect(() => {
+  const fetchVillage = async () => {
+    setVillageLoading(true);
+    setVillageError(null);
+    try {
+      const url = `${API_URL}/geojson/villages`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      console.log('✅ Data desa loaded:', data.features?.length, 'fitur');
+      setVillageGeo(data);
+    } catch (err: any) {
+      console.error('❌ Gagal load desa:', err);
+      setVillageError(err.message);
+      setVillageGeo(null);
+    } finally {
+      setVillageLoading(false);
+    }
+  };
+
+  fetchVillage();
+}, [API_URL]); 
 
   // ===== LOAD MEDIA =====
   const loadBuildingMedia = useCallback(async (buildingId: string) => {
@@ -210,6 +248,7 @@ useEffect(() => {
     }
     return 'default';
   };
+
 
   // ===== MARKER ICON =====
   const getMarkerIcon = useCallback((point: any, media: any[] = []) => {
@@ -431,9 +470,11 @@ useEffect(() => {
     "LUASAN_SAWAH": true,
     "BANJIR_POLY": true,
     "SALURAN_DEFAULT": true,
+    "BATAS_DESA": true
   });
 
   if (!API_URL) throw new Error('NEXT_PUBLIC_API_URL belum dikonfigurasi');
+    // ===== BATAS DESA (dari batas-admin.geoit.dev) =====
 
   // ===== INIT MAP =====
 useEffect(() => {
@@ -658,6 +699,43 @@ useEffect(() => {
     const lines = filteredLines;
     const polygons = filteredPolygons;
 
+    // Di dalam renderData, setelah render polygons/lines/markers
+    if (villageGeo && mapRef.current) {
+      const villageGroup = L.layerGroup();
+
+      if (villageGeo.features && villageGeo.features.length > 0) {
+        L.geoJSON(villageGeo, {
+          style: {
+            color: '#8B5CF6',
+            weight: 2.5,
+            opacity: 1.0,
+            fillOpacity: 0.15,
+            fillColor: '#8B5CF6',
+          },
+          onEachFeature: (feature, layer) => {
+            // Ambil nama desa dari properti (jika ada)
+            const name = feature.properties?.name || 
+                        feature.properties?.NAMA_DESA || 
+                        feature.properties?.nama || 
+                        'Desa';
+            layer.bindPopup(`<b>${name}</b>`);
+            layer.on('click', () => {
+              mapRef.current?.fitBounds(layer.getBounds(), { padding: [30, 30] });
+            });
+          }
+        }).addTo(villageGroup);
+      }
+
+      const key = 'BATAS_DESA';
+      if (layerGroupsRef.current[key]) {
+        mapRef.current.removeLayer(layerGroupsRef.current[key]);
+      }
+      layerGroupsRef.current[key] = villageGroup;
+      if (layerVisibility[key] !== false) {
+        mapRef.current.addLayer(villageGroup);
+      }
+    }
+
     // ===== POLYGONS =====
     const polygonGroups: Record<string, L.LayerGroup> = {};
     polygons.forEach((poly: any) => {
@@ -870,7 +948,7 @@ useEffect(() => {
     }
     setTimeout(() => { if (mapRef.current) mapRef.current.invalidateSize(); }, 300);
     console.log('✅ Data selesai di-render!');
-  }, [geoData, mapReady, layerVisibility, isPanelOpen, measureMode, selectedPoints, buildingMedia, tagFilter, filteredPoints, filteredLines, filteredPolygons, L]);
+  }, [geoData, mapReady, layerVisibility, isPanelOpen, measureMode, selectedPoints, buildingMedia, tagFilter, filteredPoints, filteredLines, filteredPolygons, L, villageGeo]);
 
   useEffect(() => {
     renderData();
