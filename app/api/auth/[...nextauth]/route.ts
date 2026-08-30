@@ -3,7 +3,6 @@ import NextAuth, { type NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
-
 const secret = process.env.NEXTAUTH_SECRET;
 
 export const authOptions: NextAuthOptions = {
@@ -32,6 +31,8 @@ export const authOptions: NextAuthOptions = {
               email: data.user.email,
               name: data.user.full_name || data.user.email,
               role: data.user.role || "user",
+              lat: data.user.lat,          // <-- HARUS ADA
+              lon: data.user.lon,          // <-- HARUS ADA
               accessToken: data.access_token,
             };
           }
@@ -43,29 +44,35 @@ export const authOptions: NextAuthOptions = {
     }),
   ],
 
+  callbacks: {
+    async jwt({ token, user }) {
+      if (user) {
+        token.id = user.id;
+        token.email = user.email;
+        token.name = user.name;
+        token.role = user.role;
+        token.lat = user.lat;          // <-- HARUS ADA
+        token.lon = user.lon;          // <-- HARUS ADA
+        token.accessToken = user.accessToken;
+      }
+      return token;
+    },
+    async session({ session, token }) {
+      if (session.user) {
+        session.user.id = token.id as string;
+        session.user.email = token.email as string;
+        session.user.name = token.name as string;
+        session.user.role = token.role as string;
+        session.user.lat = token.lat as number;   // <-- HARUS ADA
+        session.user.lon = token.lon as number;   // <-- HARUS ADA
+      }
+      session.accessToken = token.accessToken as string;
+      return session;
+    },
+  },
 
-callbacks: {
-  async jwt({ token, user }) {
-    if (user) {
-      token.accessToken = user.accessToken;
-      token.userId = user.id;
-      token.role = user.role;
-    }
-    return token;
-  },
-  async session({ session, token }) {
-    if (session.user) {
-      // Tambahkan `as string` atau `|| ""` untuk menjamin tipe string
-      session.user.id = (token.userId as string) || "";
-      session.user.role = (token.role as string) || "user";
-    }
-    session.accessToken = (token.accessToken as string) || "";
-    return session;
-  },
-},
   pages: { signIn: "/login" },
   session: { strategy: "jwt" },
-  // @ts-ignore - TypeScript tidak bisa menjamin secret string, tapi sudah divalidasi di runtime
   secret: secret || "fallback-secret",
 };
 

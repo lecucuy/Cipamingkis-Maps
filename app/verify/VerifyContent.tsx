@@ -1,7 +1,7 @@
 // app/verify/VerifyContent.tsx
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import axios from 'axios';
 
@@ -12,12 +12,18 @@ export default function VerifyContent() {
   const router = useRouter();
   const token = searchParams.get('token');
   const [status, setStatus] = useState<'verifying' | 'success' | 'error' | 'invalid'>('verifying');
+  const hasVerified = useRef(false);
+
 
   useEffect(() => {
     if (!token) {
       setStatus('invalid');
       return;
     }
+
+    // 🔥 KALAU UDAH DIPANGGIL, LANGSUNG RETURN
+    if (hasVerified.current) return;
+    hasVerified.current = true;
 
     const verify = async () => {
       try {
@@ -31,6 +37,8 @@ export default function VerifyContent() {
     };
     verify();
   }, [token, router]);
+
+  
 
   if (status === 'verifying') {
     return <div className="min-h-screen flex items-center justify-center">Memverifikasi akun...</div>;

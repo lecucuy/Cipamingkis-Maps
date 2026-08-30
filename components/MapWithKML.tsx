@@ -27,6 +27,8 @@ import { extractHashtags } from '@/utils/hashtagHelpers';
 import { useHashtagFilter } from '@/hooks/useHashtagFilter';
 import { HashtagFilterBar } from '@/components/HashtagFilterBar';
 import { FeatureDetail } from '@/components/FeatureDetail';
+import ReporterRainfallInput from "./ReporterRainfallInput";
+import { toast } from 'react-hot-toast';
 
 declare global {
   interface Window {
@@ -96,7 +98,7 @@ export default function MapWithKML() {
   const initialFitDone = useRef(false);
   const layerGroupsRef = useRef<Record<string, L.LayerGroup>>({});
   const legendContainerRef = useRef<HTMLDivElement | null>(null);
-
+  const villageLayerRef = useRef<L.LayerGroup | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [geoData, setGeoData] = useState<any>(null);
@@ -117,13 +119,18 @@ export default function MapWithKML() {
   const [villageGeo, setVillageGeo] = useState<any>(null);
   const [villageLoading, setVillageLoading] = useState(false);
   const [villageError, setVillageError] = useState<string | null>(null);
-
+  const [showRainfallInput, setShowRainfallInput] = useState(false);
+  const [selectedBuildingId, setSelectedBuildingId] = useState<string | null>(null);
+  const [selectedBuildingName, setSelectedBuildingName] = useState<string>('');
+  const [rainfallHistory, setRainfallHistory] = useState<any[]>([]);
+  const [rainfallLoading, setRainfallLoading] = useState(false);
   const API_URL = process.env.NEXT_PUBLIC_API_URL;
   if (!API_URL) throw new Error('NEXT_PUBLIC_API_URL belum dikonfigurasi');
   // HOOK HASHTAG
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
   const { tagFilter, setTagFilter, filteredPoints, filteredLines, filteredPolygons, allTags } = useHashtagFilter(geoData);
   // State untuk data batas desa
-
+  const [showTerrain, setShowTerrain] = useState(false);
   // ===== FUNGSI FORMAT =====
   const formatLength = (meters: number) => {
     if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km`;
@@ -179,6 +186,9 @@ useEffect(() => {
   fetchVillage();
 }, [API_URL]); 
 
+
+
+
   // ===== LOAD MEDIA =====
   const loadBuildingMedia = useCallback(async (buildingId: string) => {
     if (buildingMedia[buildingId] || loadingMedia[buildingId]) return;
@@ -208,6 +218,31 @@ useEffect(() => {
       console.error('Error loading batch media:', err);
     }
   }, [API_URL]);
+
+
+useEffect(() => {
+  const style = document.createElement('style');
+  style.textContent = `
+    .village-label-google {
+      background: rgba(255, 255, 255, 0.85) !important;
+      backdrop-filter: blur(2px) !important;
+      color: #222 !important;
+      font-size: 10px !important;
+      font-weight: 500 !important;
+      padding: 2px 6px !important;
+      border-radius: 3px !important;
+      border: none !important;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15) !important;
+      font-family: 'Segoe UI', Roboto, Arial, sans-serif !important;
+      text-shadow: none !important;
+      pointer-events: none !important;
+      white-space: nowrap !important;
+      letter-spacing: 0.2px !important;
+    }
+  `;
+  document.head.appendChild(style);
+  return () => { document.head.removeChild(style); };
+}, []);
 
   // ===== FUNGSI KATEGORISASI =====
   const categorizeFeature = (name: string, description: string = '', type: string = 'point') => {
@@ -249,6 +284,46 @@ useEffect(() => {
     return 'default';
   };
 
+
+  // ===== FUNGSI BANTU UNTUK CEK BANGUNAN TERDEKAT =====
+const getNearestBuilding = useCallback((lat: number, lon: number) => {
+  if (!stationPoints || stationPoints.length === 0) return null;
+  
+  let minDist = Infinity;
+  let nearest = null;
+  
+  for (const point of stationPoints) {
+    // Hitung jarak haversine (pakai turf atau formula sederhana)
+    const from = turf.point([lon, lat]);
+    const to = turf.point([point.lon, point.lat]);
+    const distance = turf.distance(from, to, { units: 'kilometers' });
+    
+    if (distance < minDist) {
+      minDist = distance;
+      nearest = point;
+    }
+  }
+  
+  return nearest;
+}, [stationPoints]);
+// ===== TERRAIN TOGGLE =====
+const toggleTerrain = useCallback(() => {
+  setShowTerrain(prev => {
+    const newVal = !prev;
+    const map = mapRef.current;
+    if (map) {
+      const tl = (map as any)._terrainLayer;
+      if (tl) {
+        if (newVal) {
+          map.addLayer(tl);
+        } else {
+          map.removeLayer(tl);
+        }
+      }
+    }
+    return newVal;
+  });
+}, []);
 
   // ===== MARKER ICON =====
   const getMarkerIcon = useCallback((point: any, media: any[] = []) => {
@@ -331,6 +406,8 @@ useEffect(() => {
     `;
     return L.divIcon({ className: 'custom-div-icon', html: iconHtml, iconSize: [36, 50], iconAnchor: [18, 25], popupAnchor: [0, -25] });
   }, [L]);
+
+  
 
   // ===== LOAD DATA =====
   useEffect(() => {
@@ -506,9 +583,22 @@ useEffect(() => {
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
       attribution: '&copy; Esri',
     }).addTo(map);
+    // 🔥 TERRAIN LAYER (pakai OpenTopoMap)
+    const terrainLayer = L.tileLayer(
+      'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+      {
+        attribution: 'Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)',
+        maxZoom: 17,
+      }
+    );
+    (map as any)._terrainLayer = terrainLayer;
+
 
     L.control.zoom({ position: 'bottomright' }).addTo(map);
+    
 
+
+    
     // ===== LEGEND (sama seperti sebelumnya, menggunakan L dan CATEGORY_CONFIG) =====
     const legend = L.control({ position: 'bottomleft' });
     let legendVisible = true;
@@ -655,20 +745,27 @@ useEffect(() => {
 }, [loading, error, L]); // <-- tambahkan L sebagai dependensi
 
   // ===== TOGGLE LAYER =====
-  useEffect(() => {
-    window.toggleLayer = (key: string) => {
-      setLayerVisibility(prev => {
-        const newVal = !prev[key];
-        const newState = { ...prev, [key]: newVal };
-        if (mapRef.current && layerGroupsRef.current[key]) {
-          if (newVal) mapRef.current.addLayer(layerGroupsRef.current[key]);
-          else mapRef.current.removeLayer(layerGroupsRef.current[key]);
-        }
-        return newState;
-      });
-    };
-    return () => { window.toggleLayer = undefined; };
-  }, []);
+useEffect(() => {
+  window.toggleLayer = (key: string) => {
+    setLayerVisibility(prev => {
+      const newVal = !prev[key];
+      const newState = { ...prev, [key]: newVal };
+      if (mapRef.current && layerGroupsRef.current[key]) {
+        if (newVal) mapRef.current.addLayer(layerGroupsRef.current[key]);
+        else mapRef.current.removeLayer(layerGroupsRef.current[key]);
+      }
+      return newState;
+    });
+  };
+  
+  // 🔥 TAMBAHKAN INI
+  window.toggleTerrain = toggleTerrain;
+  
+  return () => {
+    window.toggleLayer = undefined;
+    window.toggleTerrain = undefined;  // <-- TAMBAH
+  };
+}, [toggleTerrain]);
 
   useEffect(() => {
     if (!legendContainerRef.current) return;
@@ -677,6 +774,97 @@ useEffect(() => {
     if (isMobile) el.style.display = isPanelOpen ? 'none' : 'block';
     else el.style.display = 'block';
   }, [isPanelOpen]);
+
+  useEffect(() => {
+  const map = mapRef.current;
+  if (!mapReady || !map || !villageGeo) {
+    // Hapus layer jika ada
+    if (villageLayerRef.current && map) {
+      map.removeLayer(villageLayerRef.current);
+      villageLayerRef.current = null;
+    }
+    return;
+  }
+
+  const isVisible = layerVisibility['BATAS_DESA'] !== false;
+  const zoom = map.getZoom();
+  const shouldShow = isVisible && zoom >= 13; // threshold zoom
+
+  const currentGroup = villageLayerRef.current;
+  const isAdded = currentGroup && map.hasLayer(currentGroup);
+
+  // Jika kondisi sama, tidak perlu rebuild
+  if (currentGroup && isAdded === shouldShow) {
+    return;
+  }
+
+  // Hapus layer lama
+  if (currentGroup) {
+    map.removeLayer(currentGroup);
+    villageLayerRef.current = null;
+  }
+
+  if (!shouldShow) return;
+
+  // Buat layer baru dengan tooltip permanen
+  const newGroup = L.layerGroup();
+
+  L.geoJSON(villageGeo, {
+    style: {
+      color: '#8B5CF6',
+      weight: 1.8,
+      opacity: 0.7,
+      fillOpacity: 0.06,
+      fillColor: '#8B5CF6',
+    },
+    onEachFeature: (feature: any, layer: any) => {
+      const name = feature.properties?.name ||
+                   feature.properties?.NAMA_DESA ||
+                   feature.properties?.nama ||
+                   'Desa';
+
+      layer.bindTooltip(name, {
+        permanent: true,
+        direction: 'center',
+        className: 'village-label-google',
+        offset: [0, 0],
+        opacity: 0.85,
+      });
+      layer.bindPopup(`<b>${name}</b>`);
+      // Tidak ada event click yang memicu zoom
+    },
+  }).addTo(newGroup);
+
+  villageLayerRef.current = newGroup;
+  map.addLayer(newGroup);
+
+  // Fungsi untuk update saat zoom berubah
+  const updateZoom = () => {
+    if (!mapRef.current) return;
+    const currentZoom = mapRef.current.getZoom();
+    const currentVisible = layerVisibility['BATAS_DESA'] !== false;
+    const shouldShowNow = currentVisible && currentZoom >= 13;
+    const group = villageLayerRef.current;
+    if (!group) return;
+    const isAddedNow = mapRef.current.hasLayer(group);
+    if (shouldShowNow && !isAddedNow) {
+      mapRef.current.addLayer(group);
+    } else if (!shouldShowNow && isAddedNow) {
+      mapRef.current.removeLayer(group);
+    }
+  };
+
+  map.on('zoomend', updateZoom);
+
+  // Cleanup
+  return () => {
+    map.off('zoomend', updateZoom);
+    if (villageLayerRef.current && mapRef.current) {
+      mapRef.current.removeLayer(villageLayerRef.current);
+      villageLayerRef.current = null;
+    }
+  };
+}, [villageGeo, mapReady, layerVisibility['BATAS_DESA']]);
 
   // ============ RENDER DATA ============
   const renderData = useCallback(() => {
@@ -698,43 +886,6 @@ useEffect(() => {
     const points = filteredPoints;
     const lines = filteredLines;
     const polygons = filteredPolygons;
-
-    // Di dalam renderData, setelah render polygons/lines/markers
-    if (villageGeo && mapRef.current) {
-      const villageGroup = L.layerGroup();
-
-      if (villageGeo.features && villageGeo.features.length > 0) {
-        L.geoJSON(villageGeo, {
-          style: {
-            color: '#8B5CF6',
-            weight: 2.5,
-            opacity: 1.0,
-            fillOpacity: 0.15,
-            fillColor: '#8B5CF6',
-          },
-           onEachFeature: (feature: any, layer: any) => {
-            // Ambil nama desa dari properti (jika ada)
-            const name = feature.properties?.name || 
-                        feature.properties?.NAMA_DESA || 
-                        feature.properties?.nama || 
-                        'Desa';
-            layer.bindPopup(`<b>${name}</b>`);
-            layer.on('click', () => {
-              mapRef.current?.fitBounds(layer.getBounds(), { padding: [30, 30] });
-            });
-          }
-        }).addTo(villageGroup);
-      }
-
-      const key = 'BATAS_DESA';
-      if (layerGroupsRef.current[key]) {
-        mapRef.current.removeLayer(layerGroupsRef.current[key]);
-      }
-      layerGroupsRef.current[key] = villageGroup;
-      if (layerVisibility[key] !== false) {
-        mapRef.current.addLayer(villageGroup);
-      }
-    }
 
     // ===== POLYGONS =====
     const polygonGroups: Record<string, L.LayerGroup> = {};
@@ -783,7 +934,52 @@ useEffect(() => {
       const cfg = CATEGORY_CONFIG[category] || CATEGORY_CONFIG['SALURAN_DEFAULT'];
       const isKejuron = category === 'KEJURON';
       const isSempadan = category === 'SEMBADAN';
+      const isSaluran = category === 'SALURAN_DEFAULT' || category === 'default';
 
+        // 🔥 EFEK GLOW UNTUK SALURAN
+        if (isSaluran) {
+          const glow = L.polyline(line.path, {
+            color: '#00E5FF',
+            weight: 8,
+            opacity: 0.1,
+            interactive: false,
+          });
+          const main = L.polyline(line.path, {
+            color: '#00E5FF',
+            weight: 3,
+            opacity: 0.9,
+            lineJoin: 'round',
+          });
+          const center = L.polyline(line.path, {
+            color: '#FFFFFF',
+            weight: 1,
+            opacity: 0.3,
+            interactive: false,
+          });
+          const group = L.layerGroup([glow, center, main]);
+
+          // Bind popup & event ke main
+          let popupContent = `
+            <div style="font-family:Inter;min-width:150px;">
+              <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Saluran'}</h4>
+              <p style="margin:0;font-size:11px;color:#666;">${cfg.label}</p>
+          `;
+          if (line.length) {
+            popupContent += `<p style="margin:4px 0 0 0;font-size:12px;color:#00E5FF;font-weight:bold;">📏 Panjang: ${formatLength(line.length)}</p>`;
+          }
+          popupContent += `</div>`;
+          main.bindPopup(popupContent);
+          main.on('click', () => {
+            if (line.length) {
+              setSelectedSaluran({ name: line.name || 'Saluran', length: line.length });
+              if (!isPanelOpen) setIsPanelOpen(true);
+            }
+          });
+
+          if (!lineGroups['SALURAN_DEFAULT']) lineGroups['SALURAN_DEFAULT'] = L.layerGroup();
+          lineGroups['SALURAN_DEFAULT'].addLayer(group);
+          return; // <-- LANGSUNG SKIP ke line berikutnya
+        }
       // KEJURON
       if (isKejuron) {
         const layer = L.polyline(line.path, { color: '#AAAAAA', weight: 1.5, dashArray: '2, 6', opacity: 0.3, lineJoin: 'round' });
@@ -924,13 +1120,45 @@ useEffect(() => {
               if (!isPanelOpen) setIsPanelOpen(true);
             }
           } else {
-            setActiveStation(point);
-            setActiveIdx(idx);
-            setSelectedFeature(point); // <-- SET SELECTED FEATURE
-            loadBuildingMedia(point.name);
-            map.flyTo([point.lat, point.lon], 17, { duration: 1.2 });
-          }
-        });
+              setActiveStation(point);
+              setActiveIdx(idx);
+              setSelectedFeature(point);
+              
+              // 🔥 CEK APAKAH REPORTER DAN APAKAH INI BANGUNAN TERDEKAT
+              if (session?.user?.role === 'reporter') {
+                const reporterLat = session?.user?.lat;
+                const reporterLon = session?.user?.lon;
+                
+                if (reporterLat && reporterLon) {
+                  const nearest = getNearestBuilding(reporterLat, reporterLon);
+                  if (nearest && nearest.name === point.name) {
+                    // ✅ BENAR: bangunan ini adalah yang terdekat
+                    setSelectedBuildingId(point.name);
+                    setSelectedBuildingName(point.name);
+                    setShowRainfallInput(true);
+                  } else {
+                    // ❌ SALAH: reporter mencoba input di bangunan lain
+                    toast.error(`Anda hanya bisa input di bangunan terdekat: ${nearest?.name || 'tidak ditemukan'}`);
+                    setShowRainfallInput(false);
+                    // (Opsional) arahkan map ke bangunan terdekat
+                    if (nearest && mapRef.current) {
+                      mapRef.current.flyTo([nearest.lat, nearest.lon], 15);
+                    }
+                  }
+                } else {
+                  // Lokasi reporter belum diatur
+                  toast.error('Lokasi Anda belum diatur. Hubungi admin.');
+                  setShowRainfallInput(false);
+                }
+              } else {
+                // Non-reporter: tidak tampilkan form
+                setShowRainfallInput(false);
+              }
+
+              loadBuildingMedia(point.name);
+              map.flyTo([point.lat, point.lon], 17, { duration: 1.2 });
+            }
+          })
 
       if (markerGroups[category]) markerGroups[category].addLayer(marker);
     });
@@ -978,6 +1206,8 @@ useEffect(() => {
       </div>
     );
   }
+
+  
 
   return (
     <div className={`h-screen w-screen overflow-hidden ${isDark ? 'dark' : ''}`}>
@@ -1081,49 +1311,96 @@ useEffect(() => {
             <div className="w-12 h-1.5 rounded-full bg-gray-300 dark:bg-gray-600"></div>
           </div>
 
+
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-[#2a2a4e] flex-shrink-0">
             <div className="flex items-center gap-2">
               <div className="w-8 h-8 rounded-xl bg-[#00c8ff]/10 flex items-center justify-center">
                 <i className="fa-solid fa-water text-[#00c8ff]"></i>
               </div>
-              <div>
-                <h2 className="font-semibold text-[#1a1a2e] dark:text-white text-sm">Sarana & Prasarana Monitoring</h2>
-              </div>
+
             </div>
-            <div className="flex items-center gap-2">
-              {session ? (
-                <div className="relative group">
-                  <button className="w-8 h-8 rounded-full bg-gradient-to-br from-[#00c8ff] to-blue-600 text-white flex items-center justify-center text-sm font-semibold shadow-md hover:shadow-lg transition-all hover:scale-105">
-                    {session.user?.email?.charAt(0).toUpperCase() || "U"}
-                  </button>
-                  <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-[#1a1a2e] rounded-lg shadow-xl border border-gray-200 dark:border-[#2a2a4e] py-1 z-50 hidden group-hover:block">
-                    <div className="px-4 py-2 text-xs text-gray-700 dark:text-gray-300 border-b border-gray-100 dark:border-[#2a2a4e]">
-                      {session.user?.email}
-                    </div>
-                    <button onClick={() => signOut()} className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-gray-100 dark:hover:bg-[#2a2a4e] transition">
-                      <i className="fa-solid fa-right-from-bracket mr-2"></i> Logout
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button onClick={() => signIn()} className="px-3 py-1.5 text-[10px] font-medium bg-[#00c8ff] text-white rounded-lg hover:bg-[#00c8ff]/90 transition shadow-lg shadow-[#00c8ff]/20 flex items-center gap-1">
-                  <i className="fa-solid fa-right-to-bracket"></i> Login
-                </button>
-              )}
+
+            <div className="flex items-center gap-1.5">
+              {/* TOMBOL UKUR JARAK */}
               <button
                 onClick={() => {
                   setMeasureMode(!measureMode);
                   if (!measureMode) { setSelectedPoints([]); setMeasureResult(null); }
                 }}
-                className={`px-3 py-1.5 text-[10px] font-medium rounded-lg transition-all flex items-center gap-1 ${
-                  measureMode ? 'bg-red-500 text-white shadow-lg shadow-red-500/30' : 'bg-gray-200 dark:bg-[#2a2a4e] text-gray-600 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-[#3a3a5e]'
+                className={`px-2.5 py-1.5 text-[10px] font-medium rounded-lg transition-all flex items-center gap-1 ${
+                  measureMode
+                    ? 'bg-red-500 text-white shadow-lg shadow-red-500/30'
+                    : 'bg-gray-200 dark:bg-[#2a2a4e] text-gray-600 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-[#3a3a5e]'
                 }`}
               >
                 <i className="fa-solid fa-ruler"></i>
-                {measureMode ? 'Mengukur...' : 'Ukur Jarak'}
+                {measureMode ? 'Mengukur' : 'Ukur'}
               </button>
-              <button onClick={() => setIsPanelOpen(false)} className="w-8 h-8 rounded-lg hover:bg-gray-100 dark:hover:bg-[#2a2a4e] flex items-center justify-center text-gray-500 dark:text-gray-400" style={{ pointerEvents: 'auto' }} >
+
+              {/* TOMBOL TERRAIN */}
+              <button
+                onClick={toggleTerrain}
+                className={`px-2.5 py-1.5 text-[10px] font-medium rounded-lg transition-all flex items-center gap-1 ${
+                  showTerrain
+                    ? 'bg-green-500 text-white shadow-lg shadow-green-500/30'
+                    : 'bg-gray-200 dark:bg-[#2a2a4e] text-gray-600 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-[#3a3a5e]'
+                }`}
+              >
+                <i className={`fa-solid ${showTerrain ? 'fa-globe' : 'fa-mountain'}`}></i>
+                {showTerrain ? 'Terrain' : 'Satelit'}
+              </button>
+
+              {/* PROFILE / LOGIN */}
+              {session ? (
+                <div className="relative">
+                  <button
+                    onClick={() => setIsProfileOpen(!isProfileOpen)}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-gray-200 dark:bg-[#2a2a4e] hover:bg-gray-300 dark:hover:bg-[#3a3a5e] transition text-sm font-medium text-[#1a1a2e] dark:text-white"
+                  >
+                    <span className="w-6 h-6 rounded-full bg-gradient-to-br from-[#00c8ff] to-blue-600 text-white flex items-center justify-center text-xs font-semibold shadow-md">
+                      {session.user?.email?.charAt(0).toUpperCase() || "U"}
+                    </span>
+                    <span className="hidden sm:inline max-w-[80px] truncate text-xs">
+                      {session.user?.email?.split('@')[0] || 'User'}
+                    </span>
+                    <i className={`fa-solid fa-chevron-down text-[10px] transition-transform ${isProfileOpen ? 'rotate-180' : ''}`}></i>
+                  </button>
+
+                  {/* DROPDOWN PROFILE */}
+                  {isProfileOpen && (
+                    <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-[#1a1a2e] rounded-xl shadow-2xl border border-gray-200 dark:border-[#2a2a4e] py-1 z-50 overflow-hidden">
+                      <div className="px-4 py-3 text-xs text-gray-700 dark:text-gray-300 border-b border-gray-100 dark:border-[#2a2a4e]">
+                        <p className="font-medium truncate">{session.user?.email}</p>
+                        <p className="text-[10px] text-gray-400 mt-0.5">Role: {session.user?.role || 'user'}</p>
+                      </div>
+                      <button
+                        onClick={() => {
+                          signOut();
+                          setIsProfileOpen(false);
+                        }}
+                        className="w-full text-left px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition flex items-center gap-2"
+                      >
+                        <i className="fa-solid fa-right-from-bracket text-base"></i>
+                        <span>Logout</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <button
+                  onClick={() => signIn()}
+                  className="px-3 py-1.5 text-[10px] font-medium bg-[#00c8ff] text-white rounded-lg hover:bg-[#00c8ff]/90 transition shadow-lg shadow-[#00c8ff]/20 flex items-center gap-1"
+                >
+                  <i className="fa-solid fa-right-to-bracket"></i> Login
+                </button>
+              )}
+
+              {/* CLOSE PANEL */}
+              <button
+                onClick={() => setIsPanelOpen(false)}
+                className="w-8 h-8 rounded-lg hover:bg-gray-100 dark:hover:bg-[#2a2a4e] flex items-center justify-center text-gray-500 dark:text-gray-400"
+              >
                 <i className="fa-solid fa-xmark"></i>
               </button>
             </div>
@@ -1140,17 +1417,34 @@ useEffect(() => {
                 onClose={() => setSelectedFeature(null)}
               />
             )}
+ 
+           {/* BuildingMedia - Hanya untuk non-reporter */}
+              {activeStation && session?.user?.role !== 'reporter' && (
+                <div className="mt-2 border-t border-gray-200 dark:border-[#2a2a4e] pt-4">
+                  <BuildingMedia 
+                    buildingId={activeStation.name} 
+                    buildingName={activeStation.name}
+                    onMediaChange={() => loadBuildingMedia(activeStation.name)}
+                  />
+                </div>
+              )}
 
-            {/* BuildingMedia */}
-            {activeStation && (
-              <div className="mt-2 border-t border-gray-200 dark:border-[#2a2a4e] pt-4">
-                <BuildingMedia 
-                  buildingId={activeStation.name} 
-                  buildingName={activeStation.name}
-                  onMediaChange={() => loadBuildingMedia(activeStation.name)}
+            {/* REPORTER RAINFALL INPUT */}
+            {showRainfallInput && selectedBuildingId && session?.user?.role === 'reporter' && (
+              <div className="mt-2">
+                <ReporterRainfallInput
+                  buildingId={selectedBuildingId}
+                  buildingName={selectedBuildingName}
+                  onSuccess={() => {
+                    setShowRainfallInput(false);
+                    // Tampilkan notifikasi sukses (pastikan toast sudah di-import)
+                    toast.success('Data curah hujan berhasil disimpan!');
+                  }}
+                  onClose={() => setShowRainfallInput(false)}
                 />
               </div>
             )}
+
 
             {/* SEMPADAN DETAIL */}
             {selectedSempadan && (
