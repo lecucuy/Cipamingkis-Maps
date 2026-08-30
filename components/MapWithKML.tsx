@@ -550,6 +550,13 @@ const toggleTerrain = useCallback(() => {
     "BATAS_DESA": true
   });
 
+  declare global {
+  interface Window {
+    toggleLayer?: (key: string) => void;
+    toggleTerrain?: () => void;   // <-- add this line
+  }
+}
+
   if (!API_URL) throw new Error('NEXT_PUBLIC_API_URL belum dikonfigurasi');
     // ===== BATAS DESA (dari batas-admin.geoit.dev) =====
 
