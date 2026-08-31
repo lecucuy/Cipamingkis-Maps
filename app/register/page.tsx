@@ -33,7 +33,7 @@ export default function RegisterPage() {
   useEffect(() => {
     const loadGeoData = async () => {
       try {
-        const res = await axios.get(`${API_BASE_URL}/api/intake/geodata`);
+        const res = await axios.get(`${API_BASE_URL}/intake/geodata`);
         setGeoData({
           points: res.data.points || [],
           polygons: res.data.polygons || [],
