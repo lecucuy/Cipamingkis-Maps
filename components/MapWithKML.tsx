@@ -1109,6 +1109,8 @@ useEffect(() => {
 
         
         .on('click', () => {
+          console.log('🔍 Session user:', session?.user);
+          console.log('📌 Lat:', session?.user?.lat, 'Lon:', session?.user?.lon);
           if (measureMode) {
             if (selectedPoints.length === 0) {
               setSelectedPoints([{ lat: point.lat, lng: point.lon, name: point.name }]);
