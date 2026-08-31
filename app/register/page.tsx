@@ -102,7 +102,7 @@ export default function RegisterPage() {
         payload.polygon = selectedLocation.coordinates;
       }
 
-      await axios.post(`${API_BASE_URL}/api/auth/register`, payload);
+      await axios.post(`${API_BASE_URL}/auth/register`, payload);
       setSuccess(true);
       setTimeout(() => router.push('/verify-pending'), 3000);
     } catch (err: any) {
