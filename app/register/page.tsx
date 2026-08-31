@@ -11,7 +11,7 @@ const RegisterMap = dynamic(() => import('@/components/RegisterMap'), {
   loading: () => <div className="h-64 w-full bg-gray-200 dark:bg-[#1a1a2e] rounded-xl animate-pulse" />,
 });
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:5001';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001';
 
 export default function RegisterPage() {
   const [username, setUsername] = useState('');
