@@ -277,7 +277,7 @@ useEffect(() => {
       if (fullText.includes('KEJURON')) return 'KEJURON';
       if (fullText.includes('SEMPADAN') || fullText.includes('SEMBADAN')) return 'SEMBADAN';
       if (fullText.includes('BATAS')) return 'BATAS';
-      return 'SALURAN_DEFAULT';
+      return 'SALURAN_DEFAULT'; // ← ini yang dipakai untuk "Saluran Sekunder Mengker"
     }
     if (type === 'polygon') {
       if (fullText.includes('LUASAN SAWAH') || fullText.includes('SAWAH')) return 'LUASAN_SAWAH';
@@ -932,7 +932,7 @@ useEffect(() => {
     lines.forEach((line: any) => {
       if (!line?.path || !Array.isArray(line.path) || line.path.length === 0) return;
       const category = line.category || 'SALURAN_DEFAULT';
-      if (category === 'SALURAN_DEFAULT' && line.name && /\bsaluran\b/i.test(line.name)) return;
+      // if (category === 'SALURAN_DEFAULT' && line.name && /\bsaluran\b/i.test(line.name)) return;
 
       const cfg = CATEGORY_CONFIG[category] || CATEGORY_CONFIG['SALURAN_DEFAULT'];
       const isKejuron = category === 'KEJURON';
