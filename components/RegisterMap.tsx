@@ -23,17 +23,14 @@ export default function RegisterMap({
   const mapInstanceRef = useRef<any>(null);
   const [selectedData, setSelectedData] = useState<any>(null);
 
-  // Untuk custom drawing polygon
   const drawingRef = useRef<{
     isDrawing: boolean;
     points: [number, number][];
-    tempPolygon: any; // L.Polygon
-    tempLine: any; // L.Polyline
+    tempLine: any;
     markers: any[];
   }>({
     isDrawing: false,
     points: [],
-    tempPolygon: null,
     tempLine: null,
     markers: [],
   });
@@ -52,8 +49,8 @@ export default function RegisterMap({
 
     let marker: any = null;
     let isMounted = true;
-    const drawnPolygons: any[] = []; // menyimpan polygon yang sudah selesai digambar (custom)
-    const existingPolygons: any[] = []; // dari geoData
+    const drawnPolygons: any[] = [];
+    const existingPolygons: any[] = [];
 
     const initMap = () => {
       try {
@@ -108,9 +105,9 @@ export default function RegisterMap({
           });
         }
 
-        // ===== MODE POLYGON (custom drawing) =====
+        // ===== MODE POLYGON =====
         if (mode === 'polygon') {
-          // ===== Tampilkan polygon dari geoData =====
+          // Tampilkan polygon dari geoData
           if (geoData?.polygons) {
             geoData.polygons.forEach((p: any) => {
               const coords = p.geometry?.coordinates?.[0]?.map((c: any) => [c[1], c[0]]);
@@ -123,7 +120,9 @@ export default function RegisterMap({
                 }).addTo(map);
                 poly.bindPopup(p.name || 'Area');
                 poly.on('click', () => {
-                  const data = { type: 'polygon', coordinates: coords.map((c: any) => [c[1], c[0]]), name: p.name };
+                  const latlngs = poly.getLatLngs()[0] as L.LatLng[];
+                  const coordsData = latlngs.map((pt) => [pt.lng, pt.lat]);
+                  const data = { type: 'polygon', coordinates: coordsData, name: p.name };
                   setSelectedData(data);
                   onLocationSelect(data);
                   map.fitBounds(poly.getBounds());
@@ -140,13 +139,11 @@ export default function RegisterMap({
             drawingRef.current.points = [];
             drawingRef.current.markers = [];
 
-            // Instruksi
             L.popup()
               .setLatLng(map.getCenter())
               .setContent('🖱️ Klik untuk tambah titik, <b>double‑click</b> atau <b>klik kanan</b> untuk selesai.')
               .openOn(map);
 
-            // Event listener
             map.on('click', onMapClick);
             map.on('dblclick', finishDrawing);
             map.on('contextmenu', finishDrawing);
@@ -157,16 +154,14 @@ export default function RegisterMap({
             const point: [number, number] = [lat, lng];
             drawingRef.current.points.push(point);
 
-            // Tandai titik dengan marker kecil
-            const marker = L.circleMarker([lat, lng], {
+            const markerCircle = L.circleMarker([lat, lng], {
               radius: 4,
               color: '#00c8ff',
               fillColor: '#00c8ff',
               fillOpacity: 1,
             }).addTo(map);
-            drawingRef.current.markers.push(marker);
+            drawingRef.current.markers.push(markerCircle);
 
-            // Update garis sementara
             if (drawingRef.current.tempLine) {
               map.removeLayer(drawingRef.current.tempLine);
             }
@@ -182,7 +177,6 @@ export default function RegisterMap({
           const finishDrawing = () => {
             if (!drawingRef.current.isDrawing) return;
             if (drawingRef.current.points.length < 3) {
-              // Kurang dari 3 titik, batal
               resetDrawing();
               L.popup()
                 .setLatLng(map.getCenter())
@@ -191,7 +185,6 @@ export default function RegisterMap({
               return;
             }
 
-            // Buat polygon permanen
             const poly = L.polygon(drawingRef.current.points, {
               color: '#00c8ff',
               fillColor: '#00c8ff',
@@ -200,7 +193,8 @@ export default function RegisterMap({
             }).addTo(map);
             poly.bindPopup('Polygon baru (klik untuk pilih)');
             poly.on('click', () => {
-              const coords = poly.getLatLngs()[0].map((p: any) => [p.lng, p.lat]);
+              const latlngs = poly.getLatLngs()[0] as L.LatLng[];
+              const coords = latlngs.map((pt) => [pt.lng, pt.lat]);
               const data = { type: 'polygon', coordinates: coords, custom: true };
               setSelectedData(data);
               onLocationSelect(data);
@@ -208,7 +202,6 @@ export default function RegisterMap({
             });
             drawnPolygons.push(poly);
 
-            // Simpan koordinat untuk callback
             const coords = drawingRef.current.points.map((p) => [p[1], p[0]]);
             const data = { type: 'polygon', coordinates: coords, custom: true };
             setSelectedData(data);
@@ -232,62 +225,65 @@ export default function RegisterMap({
             map.off('contextmenu', finishDrawing);
           };
 
-          // ===== TOMBOL MULAI GAMBAR =====
-          // Tambahkan kontrol custom di pojok kiri bawah
-          const controlContainer = L.control({ position: 'bottomleft' });
-          controlContainer.onAdd = () => {
-            const div = L.DomUtil.create('div', 'leaflet-control leaflet-bar');
-            div.style.padding = '5px';
-            const btn = L.DomUtil.create('button', 'leaflet-control-button');
-            btn.innerHTML = '✏️ Gambar Polygon';
-            btn.style.background = '#00c8ff';
-            btn.style.color = 'white';
-            btn.style.border = 'none';
-            btn.style.borderRadius = '4px';
-            btn.style.padding = '6px 12px';
-            btn.style.cursor = 'pointer';
-            btn.style.fontWeight = 'bold';
-            btn.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
-            btn.onclick = (e) => {
-              L.DomEvent.stopPropagation(e);
-              if (drawingRef.current.isDrawing) {
-                finishDrawing();
-              } else {
-                startDrawing();
-              }
-            };
-            div.appendChild(btn);
-            return div;
-          };
-          controlContainer.addTo(map);
+          // ===== CUSTOM CONTROL DENGAN L.Control.extend =====
+          const DrawControl = L.Control.extend({
+            options: { position: 'bottomleft' },
+            onAdd: function (this: any) {
+              const div = L.DomUtil.create('div', 'leaflet-control leaflet-bar');
+              div.style.padding = '5px';
+              const btn = L.DomUtil.create('button', 'leaflet-control-button');
+              btn.innerHTML = '✏️ Gambar Polygon';
+              btn.style.background = '#00c8ff';
+              btn.style.color = 'white';
+              btn.style.border = 'none';
+              btn.style.borderRadius = '4px';
+              btn.style.padding = '6px 12px';
+              btn.style.cursor = 'pointer';
+              btn.style.fontWeight = 'bold';
+              btn.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+              btn.onclick = (e: Event) => {
+                L.DomEvent.stopPropagation(e);
+                if (drawingRef.current.isDrawing) {
+                  finishDrawing();
+                } else {
+                  startDrawing();
+                }
+              };
+              div.appendChild(btn);
+              return div;
+            },
+          });
 
-          // Tombol hapus semua polygon custom (opsional)
-          const clearBtn = L.control({ position: 'bottomleft' });
-          clearBtn.onAdd = () => {
-            const div = L.DomUtil.create('div', 'leaflet-control leaflet-bar');
-            div.style.padding = '5px';
-            const btn = L.DomUtil.create('button', 'leaflet-control-button');
-            btn.innerHTML = '🗑️ Hapus Semua';
-            btn.style.background = '#e74c3c';
-            btn.style.color = 'white';
-            btn.style.border = 'none';
-            btn.style.borderRadius = '4px';
-            btn.style.padding = '6px 12px';
-            btn.style.cursor = 'pointer';
-            btn.style.fontWeight = 'bold';
-            btn.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
-            btn.onclick = (e) => {
-              L.DomEvent.stopPropagation(e);
-              drawnPolygons.forEach((p) => map.removeLayer(p));
-              drawnPolygons.length = 0;
-              setSelectedData(null);
-              onLocationSelect(null);
-              resetDrawing();
-            };
-            div.appendChild(btn);
-            return div;
-          };
-          clearBtn.addTo(map);
+          const ClearControl = L.Control.extend({
+            options: { position: 'bottomleft' },
+            onAdd: function (this: any) {
+              const div = L.DomUtil.create('div', 'leaflet-control leaflet-bar');
+              div.style.padding = '5px';
+              const btn = L.DomUtil.create('button', 'leaflet-control-button');
+              btn.innerHTML = '🗑️ Hapus Semua';
+              btn.style.background = '#e74c3c';
+              btn.style.color = 'white';
+              btn.style.border = 'none';
+              btn.style.borderRadius = '4px';
+              btn.style.padding = '6px 12px';
+              btn.style.cursor = 'pointer';
+              btn.style.fontWeight = 'bold';
+              btn.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+              btn.onclick = (e: Event) => {
+                L.DomEvent.stopPropagation(e);
+                drawnPolygons.forEach((p) => map.removeLayer(p));
+                drawnPolygons.length = 0;
+                setSelectedData(null);
+                onLocationSelect(null);
+                resetDrawing();
+              };
+              div.appendChild(btn);
+              return div;
+            },
+          });
+
+          map.addControl(new DrawControl());
+          map.addControl(new ClearControl());
         }
 
         setTimeout(() => map.invalidateSize(), 200);
