@@ -297,7 +297,7 @@ export default function BuildingMedia({
       });
       await loadMedia();
       alert('✅ Media berhasil dihapus!');
-    } catch (err) {
+    } catch (err: any) {   // ❌ FIXED: added :any
       console.error('Gagal hapus:', err);
       alert('❌ Gagal hapus media');
     }
@@ -337,7 +337,7 @@ export default function BuildingMedia({
         ...prev,
         [mediaId]: { count: like_count, liked }
       }));
-    } catch (err: any) {   // ← change to `any` or `unknown` and then type-check
+    } catch (err: any) {
       console.error('Like error:', err);
       toast.error('Gagal like media');
     }
@@ -369,76 +369,72 @@ export default function BuildingMedia({
   }, [filtered, session]);
 
   // ===== SHARE =====
-const handleShare = async (mediaItem: MediaItem) => {
-  try {
-    // 1. Kirim request ke backend untuk catat share
-    const headers = session?.accessToken ? { Authorization: `Bearer ${session.accessToken}` } : {};
-    const res = await axios.post(`${API_URL}/media/${mediaItem._id}/share`, {}, { headers });
-    const { shared, share_count } = res.data;
+  const handleShare = async (mediaItem: MediaItem) => {
+    try {
+      const headers = session?.accessToken ? { Authorization: `Bearer ${session.accessToken}` } : {};
+      const res = await axios.post(`${API_URL}/media/${mediaItem._id}/share`, {}, { headers });
+      const { shared, share_count } = res.data;
 
-    if (shared) {
-      // Update state share count
-      setShareCounts(prev => ({
-        ...prev,
-        [mediaItem._id]: share_count
-      }));
-    }
-
-    // 2. Bagikan via Web Share API atau copy link
-    const shareData = {
-      title: `📸 ${buildingName} - ${mediaItem.description || 'Media'}`,
-      text: `Cek media dari ${buildingName} di Cipamingkis!`,
-      url: mediaItem.file_url,
-    };
-
-    if (navigator.share) {
-      try {
-        await navigator.share(shareData);
-        toast.success('✅ Berhasil dibagikan!');
-      } catch (err) {
-        if (err.name !== 'AbortError') {
-          console.error('Share error:', err);
-          toast.error('Gagal share');
-        }
+      if (shared) {
+        setShareCounts(prev => ({
+          ...prev,
+          [mediaItem._id]: share_count
+        }));
       }
-    } else {
-      // Fallback: copy link
-      try {
-        await navigator.clipboard.writeText(mediaItem.file_url);
-        toast.success('🔗 Link disalin ke clipboard!');
-      } catch {
-        toast.error('Gagal copy link');
-      }
-    }
-  } catch (err) {
-    console.error('Share error:', err);
-    toast.error('Gagal share media');
-  }
-};
 
-useEffect(() => {
-  const fetchShareCounts = async () => {
-    const mediaIds = filtered.map(item => item._id);
-    const counts = await Promise.all(
-      mediaIds.map(async (id) => {
+      const shareData = {
+        title: `📸 ${buildingName} - ${mediaItem.description || 'Media'}`,
+        text: `Cek media dari ${buildingName} di Cipamingkis!`,
+        url: mediaItem.file_url,
+      };
+
+      if (navigator.share) {
         try {
-          const res = await axios.get(`${API_URL}/media/${id}/share/count`);
-          return { id, count: res.data.share_count };
-        } catch {
-          return { id, count: 0 };
+          await navigator.share(shareData);
+          toast.success('✅ Berhasil dibagikan!');
+        } catch (err: any) {   // ❌ FIXED: added :any
+          if (err.name !== 'AbortError') {
+            console.error('Share error:', err);
+            toast.error('Gagal share');
+          }
         }
-      })
-    );
-    const newCounts: Record<string, number> = {};
-    counts.forEach(c => { newCounts[c.id] = c.count; });
-    setShareCounts(newCounts);
+      } else {
+        try {
+          await navigator.clipboard.writeText(mediaItem.file_url);
+          toast.success('🔗 Link disalin ke clipboard!');
+        } catch {
+          toast.error('Gagal copy link');
+        }
+      }
+    } catch (err: any) {   // ❌ FIXED: added :any
+      console.error('Share error:', err);
+      toast.error('Gagal share media');
+    }
   };
-  if (filtered.length > 0) {
-    fetchShareCounts();
-  }
-}, [filtered]);
 
-  // ===== RENDER =====
+  useEffect(() => {
+    const fetchShareCounts = async () => {
+      const mediaIds = filtered.map(item => item._id);
+      const counts = await Promise.all(
+        mediaIds.map(async (id) => {
+          try {
+            const res = await axios.get(`${API_URL}/media/${id}/share/count`);
+            return { id, count: res.data.share_count };
+          } catch {
+            return { id, count: 0 };
+          }
+        })
+      );
+      const newCounts: Record<string, number> = {};
+      counts.forEach(c => { newCounts[c.id] = c.count; });
+      setShareCounts(newCounts);
+    };
+    if (filtered.length > 0) {
+      fetchShareCounts();
+    }
+  }, [filtered]);
+
+  // ===== RENDER ===== (unchanged)
   return (
     <div className="space-y-4">
       <h4 className="text-sm font-semibold text-gray-800 dark:text-white flex items-center gap-2">
