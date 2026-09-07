@@ -1,11 +1,12 @@
-//components/BuildingMedia.tsx
+// components/BuildingMedia.tsx
 'use client';
-
+import * as turf from '@turf/turf';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSession } from 'next-auth/react';
 import axios from 'axios';
 import imageCompression from 'browser-image-compression';
 import Model3DViewer from '@/components/Model3DViewer';
+import { toast } from 'react-hot-toast';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
@@ -20,15 +21,23 @@ interface MediaItem {
   created_at: string;
 }
 
+interface BuildingMediaProps {
+  buildingId: string;
+  buildingName: string;
+  onMediaChange?: () => void;
+  userRole?: string;
+  userPolygon?: number[][];
+  userLocation?: { lat: number; lng: number } | null;
+}
+
 export default function BuildingMedia({
   buildingId,
   buildingName,
   onMediaChange,
-}: {
-  buildingId: string;
-  buildingName: string;
-  onMediaChange?: () => void;
-}) {
+  userRole,
+  userPolygon,
+  userLocation,
+}: BuildingMediaProps) {
   const { data: session } = useSession();
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -49,16 +58,38 @@ export default function BuildingMedia({
   const [selectedModelUrl, setSelectedModelUrl] = useState<string | null>(null);
   const [currentMediaIndex, setCurrentMediaIndex] = useState(0);
   const [isCarouselMode, setIsCarouselMode] = useState(false);
+  const [likeCounts, setLikeCounts] = useState<Record<string, { count: number; liked: boolean }>>({});
+  const [shareCounts, setShareCounts] = useState<Record<string, number>>({});
 
-  // ===== LOAD MEDIA (via batch) =====
+
+  // ===== FUNGSI VALIDASI TPOP =====
+  const isTPOPInArea = useCallback((): boolean => {
+    if (userRole !== 'tpop') return true;
+    if (!userPolygon || userPolygon.length < 4) {
+      alert('⚠️ Wilayah kerja TPOP belum diatur. Hubungi admin.');
+      return false;
+    }
+    if (!userLocation) {
+      alert('⚠️ Lokasi Anda belum diketahui. Aktifkan GPS atau klik tombol Lokasi di peta.');
+      return false;
+    }
+    const point = turf.point([userLocation.lng, userLocation.lat]);
+    const polygon = turf.polygon([userPolygon]);
+    const inside = turf.booleanPointInPolygon(point, polygon);
+    if (!inside) {
+      alert('📍 Anda berada di luar wilayah kerja TPOP. Upload tidak diizinkan.');
+      return false;
+    }
+    return true;
+  }, [userRole, userPolygon, userLocation]);
+
+  // ===== LOAD MEDIA =====
   const loadMedia = useCallback(async () => {
     if (!buildingId) return;
     try {
-      console.log('[loadMedia] Fetching via batch for:', buildingId);
       const res = await axios.post(`${API_URL}/buildings/media/batch`, [buildingId]);
       const mediaData = res.data?.media || {};
       const items = mediaData[buildingId] || [];
-      console.log('[loadMedia] Items found:', items.length);
       setMedia(items);
     } catch (err: any) {
       if (err.response?.status === 404) {
@@ -112,6 +143,7 @@ export default function BuildingMedia({
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
+  // ===== HANDLE UPLOAD MULTIPLE =====
   const handleMultipleUpload = async () => {
     if (selectedFiles.length === 0) {
       alert('Pilih file dulu!');
@@ -121,6 +153,7 @@ export default function BuildingMedia({
       alert('Login dulu!');
       return;
     }
+    if (!isTPOPInArea()) return;
 
     setUploading(true);
     setUploadIndex(0);
@@ -216,6 +249,7 @@ export default function BuildingMedia({
       alert('Login dulu!');
       return;
     }
+    if (!isTPOPInArea()) return;
 
     const formData = new FormData();
     formData.append('file', file);
@@ -271,7 +305,6 @@ export default function BuildingMedia({
 
   const filtered = media.filter((item) => item.media_type === activeTab);
 
-  // ===== EFFECT UNTUK MODEL 3D =====
   useEffect(() => {
     if (activeTab === 'model_3d') {
       const models = media.filter(m => m.media_type === 'model_3d');
@@ -286,8 +319,126 @@ export default function BuildingMedia({
     }
   }, [activeTab, media]);
 
+  // ===== CEK APAKAH USER BERADA DI DALAM POLYGON =====
+  const isInside = userLocation && userPolygon && turf.booleanPointInPolygon(
+    turf.point([userLocation.lng, userLocation.lat]),
+    turf.polygon([userPolygon])
+  );
+
   if (!buildingId) return null;
 
+  // ===== LIKE =====
+  const toggleLike = async (mediaId: string) => {
+    try {
+      const headers = session?.accessToken ? { Authorization: `Bearer ${session.accessToken}` } : {};
+      const res = await axios.post(`${API_URL}/media/${mediaId}/like`, {}, { headers });
+      const { liked, like_count } = res.data;
+      setLikeCounts(prev => ({
+        ...prev,
+        [mediaId]: { count: like_count, liked }
+      }));
+    } catch (err) {
+      console.error('Like error:', err);
+      toast.error('Gagal like media');
+    }
+  };
+
+  useEffect(() => {
+    const fetchLikeStatus = async () => {
+      const mediaIds = filtered.map(item => item._id);
+      const statuses = await Promise.all(
+        mediaIds.map(async (id) => {
+          try {
+            const headers = session?.accessToken ? { Authorization: `Bearer ${session.accessToken}` } : {};
+            const res = await axios.get(`${API_URL}/media/${id}/like/status`, { headers });
+            return { id, ...res.data };
+          } catch {
+            return { id, liked: false, like_count: 0 };
+          }
+        })
+      );
+      const newCounts: Record<string, { count: number; liked: boolean }> = {};
+      statuses.forEach(s => {
+        newCounts[s.id] = { count: s.like_count, liked: s.liked };
+      });
+      setLikeCounts(newCounts);
+    };
+    if (filtered.length > 0) {
+      fetchLikeStatus();
+    }
+  }, [filtered, session]);
+
+  // ===== SHARE =====
+const handleShare = async (mediaItem: MediaItem) => {
+  try {
+    // 1. Kirim request ke backend untuk catat share
+    const headers = session?.accessToken ? { Authorization: `Bearer ${session.accessToken}` } : {};
+    const res = await axios.post(`${API_URL}/media/${mediaItem._id}/share`, {}, { headers });
+    const { shared, share_count } = res.data;
+
+    if (shared) {
+      // Update state share count
+      setShareCounts(prev => ({
+        ...prev,
+        [mediaItem._id]: share_count
+      }));
+    }
+
+    // 2. Bagikan via Web Share API atau copy link
+    const shareData = {
+      title: `📸 ${buildingName} - ${mediaItem.description || 'Media'}`,
+      text: `Cek media dari ${buildingName} di Cipamingkis!`,
+      url: mediaItem.file_url,
+    };
+
+    if (navigator.share) {
+      try {
+        await navigator.share(shareData);
+        toast.success('✅ Berhasil dibagikan!');
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          console.error('Share error:', err);
+          toast.error('Gagal share');
+        }
+      }
+    } else {
+      // Fallback: copy link
+      try {
+        await navigator.clipboard.writeText(mediaItem.file_url);
+        toast.success('🔗 Link disalin ke clipboard!');
+      } catch {
+        toast.error('Gagal copy link');
+      }
+    }
+  } catch (err) {
+    console.error('Share error:', err);
+    toast.error('Gagal share media');
+  }
+};
+
+useEffect(() => {
+  const fetchShareCounts = async () => {
+    const mediaIds = filtered.map(item => item._id);
+    const counts = await Promise.all(
+      mediaIds.map(async (id) => {
+        try {
+          const res = await axios.get(`${API_URL}/media/${id}/share/count`);
+          return { id, count: res.data.share_count };
+        } catch {
+          return { id, count: 0 };
+        }
+      })
+    );
+    const newCounts: Record<string, number> = {};
+    counts.forEach(c => { newCounts[c.id] = c.count; });
+    setShareCounts(newCounts);
+  };
+  if (filtered.length > 0) {
+    fetchShareCounts();
+  }
+}, [filtered]);
+
+  // ===== RENDER =====
   return (
     <div className="space-y-4">
       <h4 className="text-sm font-semibold text-gray-800 dark:text-white flex items-center gap-2">
@@ -354,134 +505,152 @@ export default function BuildingMedia({
             </p>
           )}
         </div>
-            ) : (
-  <div className="media-feed-container space-y-4 pb-2">
-    {loading ? (
-      <div className="flex justify-center py-8">
-        <div className="w-8 h-8 border-3 border-[#00c8ff] border-t-transparent rounded-full animate-spin"></div>
-      </div>
-    ) : filtered.length === 0 ? (
-      <div className="text-center py-8 text-gray-400 dark:text-gray-500">
-        <i className="fa-regular fa-face-frown text-3xl block mb-2"></i>
-        <p className="text-sm">Belum ada {activeTab === 'photo' ? 'foto' : activeTab === 'video' ? 'video' : 'riwayat perbaikan'}</p>
-        <p className="text-xs">Upload sekarang untuk berbagi momen!</p>
-      </div>
-    ) : (
-      filtered.map((item, index) => {
-        const isVideo = item.file_type === 'videos' || item.file_type === 'video';
-        const isImage = item.file_type === 'images' || item.file_type === 'image';
-        const isDocument = !isVideo && !isImage;
+      ) : (
+        <div className="media-feed-container space-y-4 pb-2">
+          {loading ? (
+            <div className="flex justify-center py-8">
+              <div className="w-8 h-8 border-3 border-[#00c8ff] border-t-transparent rounded-full animate-spin"></div>
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="text-center py-8 text-gray-400 dark:text-gray-500">
+              <i className="fa-regular fa-face-frown text-3xl block mb-2"></i>
+              <p className="text-sm">Belum ada {activeTab === 'photo' ? 'foto' : activeTab === 'video' ? 'video' : 'riwayat perbaikan'}</p>
+              <p className="text-xs">Upload sekarang untuk berbagi momen!</p>
+            </div>
+          ) : (
+            filtered.map((item, index) => {
+              const isVideo = item.file_type === 'videos' || item.file_type === 'video';
+              const isImage = item.file_type === 'images' || item.file_type === 'image';
+              const isDocument = !isVideo && !isImage;
 
-        return (
-          <div
-            key={item._id}
-            className="media-feed-item media-card group"
-            style={{ animationDelay: `${index * 0.05}s` }}
-          >
-            {/* ===== MEDIA AREA ===== */}
-            <div className="relative bg-black/5 dark:bg-black/20">
-              {isImage && (
-                <img
-                  src={item.file_url}
-                  alt={item.description || 'Media'}
-                  className="w-full max-h-[500px] object-contain cursor-pointer bg-gray-50 dark:bg-gray-900 transition-transform duration-300 group-hover:scale-[1.01]"
-                  onClick={() => {
-                    setCurrentMediaIndex(index);
-                    setIsCarouselMode(true);
-                  }}
-                  loading="lazy"
-                />
-              )}
-              {isVideo && (
-                <video
-                  src={item.file_url}
-                  className="w-full max-h-[500px] object-contain rounded-t-2xl cursor-pointer bg-black"
-                  controls
-                  playsInline
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setCurrentMediaIndex(index);
-                    setIsCarouselMode(true);
-                  }}
-                />
-              )}
-              {isDocument && (
-                <div className="w-full h-48 flex flex-col items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-400 cursor-pointer" onClick={() => window.open(item.file_url, '_blank')}>
-                  <i className="fa-solid fa-file-pdf text-5xl mb-2"></i>
-                  <span className="text-sm font-medium">{item.file_type || 'Dokumen'}</span>
-                  <span className="text-xs">Klik untuk buka</span>
-                </div>
-              )}
-
-              {/* ===== BADGE ===== */}
-              <div className="absolute top-3 left-3 z-10 bg-black/50 backdrop-blur-sm text-white text-[10px] px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-lg">
-                {item.media_type === 'photo' && '📷 Foto'}
-                {item.media_type === 'video' && '🎥 Video'}
-                {item.media_type === 'maintenance' && '🔧 Perbaikan'}
-              </div>
-
-              {/* ===== INDEX ===== */}
-              <div className="absolute bottom-3 right-3 z-10 bg-black/40 backdrop-blur-sm text-white text-[10px] px-2.5 py-1 rounded-full">
-                {index + 1} / {filtered.length}
-              </div>
-
-              {/* ===== TOMBOL HAPUS ===== */}
-              {session && (
-                <button
-                  type="button"
-                  onClick={() => handleDelete(item._id)}
-                  className="absolute top-3 right-3 z-10 w-8 h-8 rounded-full bg-red-500/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600 shadow-lg"
+              return (
+                <div
+                  key={item._id}
+                  className="media-feed-item media-card group"
+                  style={{ animationDelay: `${index * 0.05}s` }}
                 >
-                  <i className="fa-solid fa-trash text-xs"></i>
-                </button>
-              )}
-            </div>
+                  <div className="relative bg-black/5 dark:bg-black/20">
+                    {isImage && (
+                      <img
+                        src={item.file_url}
+                        alt={item.description || 'Media'}
+                        className="w-full max-h-[500px] object-contain cursor-pointer bg-gray-50 dark:bg-gray-900 transition-transform duration-300 group-hover:scale-[1.01]"
+                        onClick={() => {
+                          setCurrentMediaIndex(index);
+                          setIsCarouselMode(true);
+                        }}
+                        loading="lazy"
+                      />
+                    )}
+                    {isVideo && (
+                      <video
+                        src={item.file_url}
+                        className="w-full max-h-[500px] object-contain rounded-t-2xl cursor-pointer bg-black"
+                        controls
+                        playsInline
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCurrentMediaIndex(index);
+                          setIsCarouselMode(true);
+                        }}
+                      />
+                    )}
+                    {isDocument && (
+                      <div className="w-full h-48 flex flex-col items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-400 cursor-pointer" onClick={() => window.open(item.file_url, '_blank')}>
+                        <i className="fa-solid fa-file-pdf text-5xl mb-2"></i>
+                        <span className="text-sm font-medium">{item.file_type || 'Dokumen'}</span>
+                        <span className="text-xs">Klik untuk buka</span>
+                      </div>
+                    )}
 
-            {/* ===== DESKRIPSI & METADATA ===== */}
-            <div className="p-3 space-y-1.5">
-              <p className="text-sm font-medium text-gray-800 dark:text-white line-clamp-2">
-                {item.description || 'Tanpa deskripsi'}
-              </p>
-              <div className="flex items-center gap-3 text-[10px] text-gray-500 dark:text-gray-400">
-                <span className="flex items-center gap-1">
-                  <i className="fa-regular fa-calendar"></i>
-                  {item.timestamp
-                    ? new Date(item.timestamp).toLocaleDateString('id-ID', {
-                        day: 'numeric',
-                        month: 'short',
-                        year: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })
-                    : '-'}
-                </span>
-                <span className="w-1 h-1 rounded-full bg-gray-300 dark:bg-gray-600"></span>
-                <span className="flex items-center gap-1">
-                  <i className="fa-regular fa-clock"></i>
-                  {new Date(item.created_at).toLocaleDateString('id-ID', {
-                    day: 'numeric',
-                    month: 'short',
-                    year: 'numeric',
-                  })}
-                </span>
-              </div>
+                    <div className="absolute top-3 left-3 z-10 bg-black/50 backdrop-blur-sm text-white text-[10px] px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-lg">
+                      {item.media_type === 'photo' && '📷 Foto'}
+                      {item.media_type === 'video' && '🎥 Video'}
+                      {item.media_type === 'maintenance' && '🔧 Perbaikan'}
+                    </div>
 
-              {/* ===== SOCIAL INTERACTIONS ===== */}
-              <div className="flex items-center gap-4 pt-2 border-t border-gray-100 dark:border-gray-800 mt-1.5">
-                <button className="social-btn group" onClick={() => { /* like logic */ }}>
-                  <i className="fa-regular fa-heart text-base group-hover:scale-110 transition-transform"></i>
-                  <span className="tabular-nums"></span>
-                </button>
-                <button className="social-btn ml-auto" onClick={() => { /* share logic */ }}>
-                  <i className="fa-regular fa-share-from-square text-base"></i>
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })
-    )}
-  </div>
+                    <div className="absolute bottom-3 right-3 z-10 bg-black/40 backdrop-blur-sm text-white text-[10px] px-2.5 py-1 rounded-full">
+                      {index + 1} / {filtered.length}
+                    </div>
+
+                    {session && (
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(item._id)}
+                        className="absolute top-3 right-3 z-10 w-8 h-8 rounded-full bg-red-500/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600 shadow-lg"
+                      >
+                        <i className="fa-solid fa-trash text-xs"></i>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="p-3 space-y-1.5">
+                    <p className="text-sm font-medium text-gray-800 dark:text-white line-clamp-2">
+                      {item.description || 'Tanpa deskripsi'}
+                    </p>
+                    <div className="flex items-center gap-3 text-[10px] text-gray-500 dark:text-gray-400">
+                      <span className="flex items-center gap-1">
+                        <i className="fa-regular fa-calendar"></i>
+                        {item.timestamp
+                          ? new Date(item.timestamp).toLocaleDateString('id-ID', {
+                              day: 'numeric',
+                              month: 'short',
+                              year: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })
+                          : '-'}
+                      </span>
+                      <span className="w-1 h-1 rounded-full bg-gray-300 dark:bg-gray-600"></span>
+                      <span className="flex items-center gap-1">
+                        <i className="fa-regular fa-clock"></i>
+                        {new Date(item.created_at).toLocaleDateString('id-ID', {
+                          day: 'numeric',
+                          month: 'short',
+                          year: 'numeric',
+                        })}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-4 pt-2 border-t border-gray-100 dark:border-gray-800 mt-1.5">
+                      <button 
+                        className={`social-btn group ${likeCounts[item._id]?.liked ? 'text-red-500' : ''}`} 
+                        onClick={() => toggleLike(item._id)}
+                      >
+                        <i className={`fa-${likeCounts[item._id]?.liked ? 'solid' : 'regular'} fa-heart text-base group-hover:scale-110 transition-transform`}></i>
+                        <span className="tabular-nums">{likeCounts[item._id]?.count || 0}</span>
+                      </button>
+                      <button 
+                        className="social-btn ml-auto" 
+                        onClick={() => handleShare(item)}
+                      >
+                        <i className="fa-regular fa-share-from-square text-base"></i>
+                        <span className="tabular-nums">{shareCounts[item._id] || 0}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {/* ===== INDIKATOR TPOP ===== */}
+      {userRole === 'tpop' && userPolygon && (
+        <div className={`text-xs p-2 rounded-lg border ${
+          isInside
+            ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800 text-green-700 dark:text-green-300'
+            : 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800 text-yellow-700 dark:text-yellow-300'
+        }`}>
+          <i className={`fa-solid ${
+            isInside ? 'fa-check-circle' : 'fa-exclamation-triangle'
+          } mr-1`}></i>
+          {isInside
+            ? '✅ Anda berada di dalam wilayah kerja TPOP'
+            : '⚠️ Pastikan Anda berada di dalam wilayah kerja TPOP untuk upload'
+          }
+        </div>
       )}
 
       {session && (
@@ -584,17 +753,6 @@ export default function BuildingMedia({
                   placeholder="Pilih tanggal & waktu"
                 />
               </div>
-              {/* <button
-                type="button"
-                onClick={() => {
-                  const now = new Date();
-                  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
-                  setTimestamp(local.toISOString().slice(0, 16));
-                }}
-                className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition whitespace-nowrap"
-              >
-                Sekarang
-              </button> */}
             </div>
           </div>
 

@@ -7,15 +7,17 @@ declare module "next-auth" {
     id: string;
     email: string;
     name: string;
+    full_name?: string;
     role: string;
-    lat?: number;          // <-- TAMBAH
-    lon?: number;          // <-- TAMBAH
+    lat?: number;
+    lon?: number;
+    polygon?: number[][];      // <-- TAMBAHKAN
     accessToken?: string;
   }
 
   interface Session {
     accessToken?: string;
-    user: User;            // <-- Langsung pake User, bukan inline
+    user: User;
   }
 }
 
@@ -24,7 +26,9 @@ declare module "next-auth/jwt" {
     accessToken?: string;
     userId?: string;
     role?: string;
-    lat?: number;          // <-- TAMBAH
-    lon?: number;          // <-- TAMBAH
+    lat?: number;
+    lon?: number;
+    polygon?: number[][];      // <-- TAMBAHKAN
+    full_name?: string;
   }
 }

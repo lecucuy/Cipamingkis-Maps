@@ -29,7 +29,8 @@ import { HashtagFilterBar } from '@/components/HashtagFilterBar';
 import { FeatureDetail } from '@/components/FeatureDetail';
 import ReporterRainfallInput from "./ReporterRainfallInput";
 import { toast } from 'react-hot-toast';
-
+import { useUserLocation } from '@/components/UserLocationMarker';
+// import { useUserLocation } from '@/hooks/useUserLocation';
 declare global {
   interface Window {
     toggleLayer?: (key: string) => void;
@@ -139,6 +140,23 @@ export default function MapWithKML() {
     return `${Math.round(meters)} m`;
   };
 
+  
+
+  const {
+    userLocation,
+    userLocationError,
+    userLocationLoading,
+    getUserLocation,
+    clearUserLocation,
+  } = useUserLocation(mapRef.current, L, { autoFetch: false });
+
+
+    const userRole = session?.user?.role;
+    const userPolygon = session?.user?.polygon; // hanya ada untuk TPOP
+    const userLat = session?.user?.lat;
+    const userLon = session?.user?.lon;
+    
+
   // ===== SEARCH =====
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return stationPoints;
@@ -160,6 +178,9 @@ useEffect(() => {
   };
   loadLibraries();
 }, []);
+
+
+
 
 
 
@@ -551,6 +572,13 @@ const toggleTerrain = useCallback(() => {
     "SALURAN_DEFAULT": true,
     "BATAS_DESA": true
   });
+
+
+    useEffect(() => {
+    if (session?.user) {
+      getUserLocation();
+    }
+  }, [session, getUserLocation]);
 
 
   if (!API_URL) throw new Error('NEXT_PUBLIC_API_URL belum dikonfigurasi');
@@ -1356,6 +1384,19 @@ useEffect(() => {
                 {showTerrain ? 'Terrain' : 'Satelit'}
               </button>
 
+              <button
+            onClick={getUserLocation}
+            disabled={userLocationLoading}
+            className={`px-2.5 py-1.5 text-[10px] font-medium rounded-lg transition-all flex items-center gap-1 ${
+              userLocation
+                ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/30'
+                : 'bg-gray-200 dark:bg-[#2a2a4e] text-gray-600 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-[#3a3a5e]'
+            }`}
+          >
+            <i className={`fa-solid ${userLocationLoading ? 'fa-spinner fa-spin' : 'fa-location-dot'}`}></i>
+            {userLocationLoading ? 'Mencari...' : 'Lokasi'}
+          </button>
+
               {/* PROFILE / LOGIN */}
               {session ? (
                 <div className="relative">
@@ -1424,15 +1465,18 @@ useEffect(() => {
             )}
  
            {/* BuildingMedia - Hanya untuk non-reporter */}
-              {activeStation && session?.user?.role !== 'reporter' && (
-                <div className="mt-2 border-t border-gray-200 dark:border-[#2a2a4e] pt-4">
-                  <BuildingMedia 
-                    buildingId={activeStation.name} 
-                    buildingName={activeStation.name}
-                    onMediaChange={() => loadBuildingMedia(activeStation.name)}
-                  />
-                </div>
-              )}
+            {activeStation && session?.user?.role !== 'reporter' && (
+              <div className="mt-2 border-t border-gray-200 dark:border-[#2a2a4e] pt-4">
+                <BuildingMedia 
+                  buildingId={activeStation.name} 
+                  buildingName={activeStation.name}
+                  onMediaChange={() => loadBuildingMedia(activeStation.name)}
+                  userRole={session?.user?.role}
+                  userPolygon={session?.user?.polygon}
+                  userLocation={userLocation}
+                />
+              </div>
+            )}
 
             {/* REPORTER RAINFALL INPUT */}
             {showRainfallInput && selectedBuildingId && session?.user?.role === 'reporter' && (

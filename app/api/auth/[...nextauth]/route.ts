@@ -25,14 +25,17 @@ export const authOptions: NextAuthOptions = {
             }),
           });
           const data = await res.json();
+
           if (res.ok && data.access_token) {
             return {
               id: data.user.id,
               email: data.user.email,
               name: data.user.full_name || data.user.email,
+              full_name: data.user.full_name,        // <-- TAMBAH
               role: data.user.role || "user",
-              lat: data.user.lat,          // <-- HARUS ADA
-              lon: data.user.lon,          // <-- HARUS ADA
+              lat: data.user.lat,
+              lon: data.user.lon,
+              polygon: data.user.polygon,            // <-- TAMBAH (array koordinat)
               accessToken: data.access_token,
             };
           }
@@ -50,21 +53,26 @@ export const authOptions: NextAuthOptions = {
         token.id = user.id;
         token.email = user.email;
         token.name = user.name;
+        token.full_name = user.full_name;       // <-- TAMBAH
         token.role = user.role;
-        token.lat = user.lat;          // <-- HARUS ADA
-        token.lon = user.lon;          // <-- HARUS ADA
+        token.lat = user.lat;
+        token.lon = user.lon;
+        token.polygon = user.polygon;           // <-- TAMBAH
         token.accessToken = user.accessToken;
       }
       return token;
     },
+
     async session({ session, token }) {
       if (session.user) {
         session.user.id = token.id as string;
         session.user.email = token.email as string;
         session.user.name = token.name as string;
+        session.user.full_name = token.full_name as string;   // <-- TAMBAH
         session.user.role = token.role as string;
-        session.user.lat = token.lat as number;   // <-- HARUS ADA
-        session.user.lon = token.lon as number;   // <-- HARUS ADA
+        session.user.lat = token.lat as number;
+        session.user.lon = token.lon as number;
+        session.user.polygon = token.polygon as number[][];   // <-- TAMBAH
       }
       session.accessToken = token.accessToken as string;
       return session;
