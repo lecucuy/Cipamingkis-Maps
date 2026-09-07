@@ -337,7 +337,7 @@ export default function BuildingMedia({
         ...prev,
         [mediaId]: { count: like_count, liked }
       }));
-    } catch (err) {
+    } catch (err: any) {   // ← change to `any` or `unknown` and then type-check
       console.error('Like error:', err);
       toast.error('Gagal like media');
     }

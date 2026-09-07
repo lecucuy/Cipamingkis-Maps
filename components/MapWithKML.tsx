@@ -142,14 +142,13 @@ export default function MapWithKML() {
 
   
 
-  const {
-    userLocation,
-    userLocationError,
-    userLocationLoading,
-    getUserLocation,
-    clearUserLocation,
-  } = useUserLocation(mapRef.current, L, { autoFetch: false });
-
+const {
+  userLocation,
+  userLocationError,
+  userLocationLoading,
+  getUserLocation,
+  clearUserLocation,
+} = useUserLocation(mapRef.current, L);
 
     const userRole = session?.user?.role;
     const userPolygon = session?.user?.polygon; // hanya ada untuk TPOP

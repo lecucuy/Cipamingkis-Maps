@@ -11,7 +11,10 @@ interface UserLocationMarkerProps {
   onLocationUpdate?: (lat: number, lng: number) => void;
 }
 
-export function useUserLocation(map: L.Map | null, L: typeof L | null) {
+export function useUserLocation(
+  map: L.Map | null,
+  leafletInstance: typeof L | null  // ← renamed parameter
+) {
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [userLocationError, setUserLocationError] = useState<string | null>(null);
   const [userLocationLoading, setUserLocationLoading] = useState(false);
