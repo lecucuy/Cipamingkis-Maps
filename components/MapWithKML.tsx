@@ -30,7 +30,17 @@ import { FeatureDetail } from '@/components/FeatureDetail';
 import ReporterRainfallInput from "./ReporterRainfallInput";
 import { toast } from 'react-hot-toast';
 import { useUserLocation } from '@/components/UserLocationMarker';
+import 'leaflet-wind';
+
 // import { useUserLocation } from '@/hooks/useUserLocation';
+// import 'leaflet.heat';
+
+
+
+declare module 'leaflet' {
+  function heat(latlngs: any[], options?: any): any;
+}
+
 declare global {
   interface Window {
     toggleLayer?: (key: string) => void;
@@ -109,7 +119,7 @@ export default function MapWithKML() {
   const [activeStation, setActiveStation] = useState<any>(null);
   const [activeIdx, setActiveIdx] = useState<number>(-1);
   const [chartData] = useState<number[]>(Array(20).fill(280));
-  const [isPanelOpen, setIsPanelOpen] = useState(true);
+  const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [isDark, setIsDark] = useState(true);
   const [mapReady, setMapReady] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -135,12 +145,18 @@ export default function MapWithKML() {
   // State untuk data batas desa
   const [showTerrain, setShowTerrain] = useState(false);
   // ===== FUNGSI FORMAT =====
+  const [showHeatmap, setShowHeatmap] = useState(false);
+  const [showAQI, setShowAQI] = useState(false);
+  const [showWind, setShowWind] = useState(false);
+  const [toolsVisible, setToolsVisible] = useState(true); // untuk collapse tombol
+  // Data lingkungan (dummy atau dari API)
+  const [envData, setEnvData] = useState<any>(null);
+  const [showTemperature, setShowTemperature] = useState(false);
   const formatLength = (meters: number) => {
     if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km`;
     return `${Math.round(meters)} m`;
   };
 
-  
 
 const {
   userLocation,
@@ -168,20 +184,19 @@ const {
     );
   }, [stationPoints, searchQuery]);
 
-  // ===== LOAD LIBRARIES =====
+
+// ===== LOAD LIBRARIES =====
 useEffect(() => {
   const loadLibraries = async () => {
     const leaflet = await import('leaflet');
-    await import('leaflet.markercluster'); // <-- TAMBAHKAN INI
+    await import('leaflet.markercluster');
+    await import('leaflet.heat');
+    // 🔥 LOAD leaflet-wind dengan cara ini
+    await import('leaflet-wind');
     setL(leaflet.default);
   };
   loadLibraries();
 }, []);
-
-
-
-
-
 
 
 // Fetch data desa
@@ -346,6 +361,63 @@ const toggleTerrain = useCallback(() => {
     return newVal;
   });
 }, []);
+
+
+
+const fetchEnvData = useCallback(async () => {
+  try {
+    // Ambil koordinat center map
+    const center = mapRef.current?.getCenter();
+    if (!center) return;
+    const lat = center.lat;
+    const lon = center.lng;
+    const apiKey = process.env.NEXT_PUBLIC_OPENWEATHER_API_KEY;
+    if (!apiKey) {
+      console.warn('API Key OpenWeather tidak ada, pakai dummy');
+      setEnvData({
+        aqi: 42,
+        windSpeed: 12,
+        windDeg: 220,
+        temp: 28.5
+      });
+      return;
+    }
+    // Air pollution
+    const aqiRes = await axios.get(`https://api.openweathermap.org/data/2.5/air_pollution?lat=${lat}&lon=${lon}&appid=${apiKey}`);
+    const aqi = aqiRes.data.list[0].main.aqi; // 1-5
+    // Weather (wind + temp)
+    const weatherRes = await axios.get(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&appid=${apiKey}`);
+    const windSpeed = weatherRes.data.wind.speed;
+    const windDeg = weatherRes.data.wind.deg;
+    const temp = weatherRes.data.main.temp;
+
+    setEnvData({ aqi, windSpeed, windDeg, temp });
+  } catch (err) {
+    console.error('Gagal fetch data lingkungan', err);
+    // Dummy fallback
+    setEnvData({ aqi: 3, windSpeed: 5, windDeg: 180, temp: 27 });
+  }
+}, []);
+
+const toggleHeatmap = useCallback(() => {
+  setShowHeatmap(prev => !prev);
+}, []);
+
+const toggleAQI = useCallback(() => {
+  setShowAQI(prev => !prev);
+  if (!showAQI) fetchEnvData(); // panggil API saat pertama kali aktif
+}, [showAQI]);
+
+const toggleWind = useCallback(() => {
+  setShowWind(prev => !prev);
+  if (!showWind) fetchEnvData();
+}, [showWind]);
+
+const toggleTemperature = useCallback(() => {
+  setShowTemperature(prev => !prev);
+  if (!showTemperature) fetchEnvData();
+}, [showTemperature, fetchEnvData]);  
+
 
   // ===== MARKER ICON =====
   const getMarkerIcon = useCallback((point: any, media: any[] = []) => {
@@ -917,7 +989,19 @@ useEffect(() => {
     const lines = filteredLines;
     const polygons = filteredPolygons;
 
-    // ===== POLYGONS =====
+      if (showWind && envData?.windSpeed) {
+        const windData = {
+          header: { lat1: -6.5, lon1: 107.0, lat2: -6.35, lon2: 107.1, nx: 20, ny: 20 },
+          data: Array.from({ length: 20 * 20 }, () => ({
+            u: (Math.random() - 0.5) * 10,
+            v: (Math.random() - 0.5) * 10
+          }))
+        };
+        const windLayer = (L as any).windLayer(windData, { colorScale: 'viridis' });
+        windLayer.addTo(map);
+        (window as any)._windLayer = windLayer;
+      }
+        // ===== POLYGONS =====
     const polygonGroups: Record<string, L.LayerGroup> = {};
     polygons.forEach((poly: any) => {
       if (!poly?.path || !Array.isArray(poly.path) || poly.path.length === 0) return;
@@ -1195,10 +1279,182 @@ useEffect(() => {
       if (markerGroups[category]) markerGroups[category].addLayer(marker);
     });
 
+
+
     Object.keys(markerGroups).forEach(key => {
       layerGroupsRef.current[key] = markerGroups[key];
       if (layerVisibility[key] !== false) map.addLayer(markerGroups[key]);
     });
+
+      // ===== HEATMAP =====
+      if ((window as any)._heatLayer) {
+        map.removeLayer((window as any)._heatLayer);
+        delete (window as any)._heatLayer;
+      }
+
+      // Cek apakah L.heat tersedia
+      const heatAvailable = typeof (L as any).heat === 'function' || typeof (L as any).heatLayer === 'function';
+      const heatFunc = (L as any).heat || (L as any).heatLayer;
+
+      if (showHeatmap && points.length > 0) {
+        if (typeof heatFunc === 'function') {
+          const heatPoints = points.map(p => [p.lat, p.lon, 1]);
+          const heatLayer = heatFunc(heatPoints, {
+            radius: 25,
+            blur: 15,
+            maxZoom: 17,
+            gradient: { 0.4: 'blue', 0.6: 'cyan', 0.7: 'lime', 0.8: 'yellow', 1.0: 'red' }
+          });
+          heatLayer.addTo(map);
+          (window as any)._heatLayer = heatLayer;
+        } else {
+          // Fallback: tampilkan circle markers dengan opacity berdasarkan kepadatan
+          console.warn('⚠️ leaflet.heat tidak tersedia, menggunakan fallback circle markers.');
+          const heatGroup = L.layerGroup();
+          const density = points.length / 100; // sesuaikan
+          points.forEach(p => {
+            const radius = 5 + (Math.random() * 5); // variasi radius
+            const circle = L.circleMarker([p.lat, p.lon], {
+              radius: radius,
+              fillColor: '#ff4500',
+              color: '#ff4500',
+              weight: 0.5,
+              opacity: 0.3,
+              fillOpacity: 0.2 + (Math.random() * 0.3)
+            });
+            heatGroup.addLayer(circle);
+          });
+          heatGroup.addTo(map);
+          (window as any)._heatLayer = heatGroup;
+        }
+      }
+
+
+    // ===== AQI =====
+    if ((window as any)._aqiLayer) {
+      map.removeLayer((window as any)._aqiLayer);
+      delete (window as any)._aqiLayer;  // perbaiki: hapus kurung tutup berlebih
+    }
+    if (showAQI && envData?.aqi) {
+      const aqiGroup = L.layerGroup();
+      const aqiColor = envData.aqi <= 2 ? '#00e400' : envData.aqi <= 3 ? '#ffff00' : '#ff7e00';
+      points.slice(0, 10).forEach(p => {
+        const circle = L.circleMarker([p.lat, p.lon], {
+          radius: 8,
+          fillColor: aqiColor,
+          color: '#fff',
+          weight: 1,
+          opacity: 1,
+          fillOpacity: 0.8
+        }).bindPopup(`<b>${p.name}</b><br>AQI: ${envData.aqi}`);
+        aqiGroup.addLayer(circle);
+      });
+      aqiGroup.addTo(map);
+      (window as any)._aqiLayer = aqiGroup;
+    }
+
+    // ===== WIND =====
+// ===== WIND (leaflet-wind) =====
+if ((window as any)._windLayer) {
+  map.removeLayer((window as any)._windLayer);
+  delete (window as any)._windLayer;
+}
+
+if (showWind && envData?.windSpeed) {
+  // Cek apakah windLayer tersedia
+  const windLayer = (L as any).windLayer;
+  if (typeof windLayer === 'function') {
+    // Buat grid data angin (dummy)
+    const windData = {
+      header: {
+        lat1: -6.5,
+        lon1: 107.0,
+        lat2: -6.35,
+        lon2: 107.1,
+        nx: 30,
+        ny: 30
+      },
+      data: Array.from({ length: 30 * 30 }, () => ({
+        u: (Math.random() - 0.5) * 15,
+        v: (Math.random() - 0.5) * 15
+      }))
+    };
+    
+    const layer = windLayer(windData, {
+      colorScale: 'viridis',
+      velocityScale: 0.02,
+      maxVelocity: 15,
+      opacity: 0.8,
+      particleAge: 60,
+      particleCount: 500
+    });
+    layer.addTo(map);
+    (window as any)._windLayer = layer;
+  } else {
+    console.warn('leaflet-wind tidak tersedia, pakai fallback panah');
+    // Fallback ke panah statis
+    const fallbackGroup = L.layerGroup();
+    const angle = envData.windDeg || 0;
+    const speed = envData.windSpeed || 0;
+    points.slice(0, 10).forEach(p => {
+      const icon = L.divIcon({
+        className: 'wind-arrow',
+        html: `<div style="transform: rotate(${angle}deg); font-size: 20px; color: #00aaff;">➤</div>`,
+        iconSize: [20, 20],
+        iconAnchor: [10, 10]
+      });
+      const marker = L.marker([p.lat, p.lon], { icon })
+        .bindPopup(`Kecepatan angin: ${speed} m/s`);
+      fallbackGroup.addLayer(marker);
+    });
+    fallbackGroup.addTo(map);
+    (window as any)._windLayer = fallbackGroup;
+  }
+}
+
+if (showWind && envData?.windSpeed) {
+  // Buat grid data angin (dummy, tapi bisa disesuaikan dengan data API)
+  const windData = {
+    header: {
+      lat1: -6.5,   // latitude selatan
+      lon1: 107.0,  // longitude barat
+      lat2: -6.35,  // latitude utara
+      lon2: 107.1,  // longitude timur
+      nx: 30,       // jumlah grid horizontal
+      ny: 30        // jumlah grid vertikal
+    },
+    data: Array.from({ length: 30 * 30 }, () => ({
+      u: (Math.random() - 0.5) * 15, // komponen U (timur-barat)
+      v: (Math.random() - 0.5) * 15  // komponen V (utara-selatan)
+    }))
+  };
+
+  // Cek apakah windLayer tersedia
+    }
+    // ===== TEMPERATURE =====
+    if ((window as any)._tempLayer) {
+      map.removeLayer((window as any)._tempLayer);
+      delete (window as any)._tempLayer;
+    }
+    if (showTemperature && envData?.temp) {
+      const tempGroup = L.layerGroup();
+      const temp = envData.temp;
+      points.slice(0, 5).forEach(p => {
+        const icon = L.divIcon({
+          className: 'temp-label',
+          html: `<div style="background: rgba(0,0,0,0.7); color: #fff; padding: 2px 6px; border-radius: 12px; font-size: 11px; font-weight: bold;">${temp}°C</div>`,
+          iconSize: [40, 20],
+          iconAnchor: [20, 10]
+        });
+        const marker = L.marker([p.lat, p.lon], { icon });
+        tempGroup.addLayer(marker);
+      });
+      tempGroup.addTo(map);
+      (window as any)._tempLayer = tempGroup;
+    }
+
+    // ⬆️⬆️⬆️ SAMPAI SINI ⬆️⬆️⬆️
+    
 
     // Fit bounds
     if (points.length > 0 && !initialFitDone.current) {
@@ -1208,11 +1464,12 @@ useEffect(() => {
     }
     setTimeout(() => { if (mapRef.current) mapRef.current.invalidateSize(); }, 300);
     console.log('✅ Data selesai di-render!');
-  }, [geoData, mapReady, layerVisibility, isPanelOpen, measureMode, selectedPoints, buildingMedia, tagFilter, filteredPoints, filteredLines, filteredPolygons, L, villageGeo]);
-
+  }, [geoData, mapReady, layerVisibility, isPanelOpen, measureMode, selectedPoints, buildingMedia, tagFilter, filteredPoints, filteredLines, filteredPolygons, L, villageGeo, showHeatmap, showAQI, showWind, showTemperature, envData]);
   useEffect(() => {
     renderData();
   }, [renderData]);
+
+  
 
   // ============ RENDER ============
   if (loading) {
@@ -1313,7 +1570,58 @@ useEffect(() => {
             </div>
           )}
         </div>
+      </div>{/* Grup Tombol Tools (seperti Google Maps) */}
+<div className="absolute bottom-24 left-4 z-[990]">
+  <div className="flex flex-col gap-2">
+    {/* Tombol toggle collapse */}
+    <button
+      onClick={() => setToolsVisible(!toolsVisible)}
+      className="w-10 h-10 rounded-full bg-white dark:bg-[#1a1a2e] shadow-lg border border-gray-200 dark:border-[#2a2a4e] flex items-center justify-center text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-[#2a2a4e] transition"
+    >
+      <i className={`fa-solid ${toolsVisible ? 'fa-chevron-left' : 'fa-chevron-right'}`}></i>
+    </button>
+
+    {/* Tombol-tombol mode (muncul jika toolsVisible true) */}
+    {toolsVisible && (
+      <div className="flex flex-col gap-2 mt-1">
+        {/* Terrain */}
+        <button
+          onClick={toggleTerrain}
+          className={`w-10 h-10 rounded-full shadow-lg border flex items-center justify-center transition ${
+            showTerrain
+              ? 'bg-green-500 text-white border-green-500'
+              : 'bg-white dark:bg-[#1a1a2e] border-gray-200 dark:border-[#2a2a4e] text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2a2a4e]'
+          }`}
+          title="Terrain / Satelit"
+        >
+          <i className={`fa-solid ${showTerrain ? 'fa-globe' : 'fa-mountain'}`}></i>
+        </button>
+
+        {/* Heatmap */}
+        <button
+          onClick={toggleHeatmap}
+          className={`w-10 h-10 rounded-full shadow-lg border flex items-center justify-center transition ${
+            showHeatmap
+              ? 'bg-orange-500 text-white border-orange-500'
+              : 'bg-white dark:bg-[#1a1a2e] border-gray-200 dark:border-[#2a2a4e] text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2a2a4e]'
+          }`}
+          title="Heatmap"
+        >
+          <i className="fa-solid fa-fire"></i>
+        </button>
+
+        {/* AQI */}
+
+
+        {/* Wind */}
+
+
+        {/* Temperature (toggle) */}
+
       </div>
+    )}
+  </div>
+</div>
 
         {/* SIDE PANEL */}
           <div
@@ -1370,18 +1678,7 @@ useEffect(() => {
                 {measureMode ? 'Mengukur' : 'Ukur'}
               </button>
 
-              {/* TOMBOL TERRAIN */}
-              <button
-                onClick={toggleTerrain}
-                className={`px-2.5 py-1.5 text-[10px] font-medium rounded-lg transition-all flex items-center gap-1 ${
-                  showTerrain
-                    ? 'bg-green-500 text-white shadow-lg shadow-green-500/30'
-                    : 'bg-gray-200 dark:bg-[#2a2a4e] text-gray-600 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-[#3a3a5e]'
-                }`}
-              >
-                <i className={`fa-solid ${showTerrain ? 'fa-globe' : 'fa-mountain'}`}></i>
-                {showTerrain ? 'Terrain' : 'Satelit'}
-              </button>
+    
 
               <button
             onClick={getUserLocation}
