@@ -33,10 +33,10 @@ import { useUserLocation } from '@/components/UserLocationMarker';
 import 'leaflet-wind';
 
 // import { useUserLocation } from '@/hooks/useUserLocation';
-// import 'leaflet.heat';
+import 'leaflet.heat';
 
 
-
+declare module 'leaflet.heat';
 declare module 'leaflet' {
   function heat(latlngs: any[], options?: any): any;
 }
