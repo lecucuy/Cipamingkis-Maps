@@ -192,7 +192,7 @@ useEffect(() => {
   const loadLibraries = async () => {
     const leaflet = await import('leaflet');
     await import('leaflet.markercluster');
-    await import('leaflet.heat');
+
     // 🔥 LOAD leaflet-wind dengan cara ini
     await import('leaflet-wind');
     setL(leaflet.default);
