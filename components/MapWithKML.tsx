@@ -30,21 +30,23 @@ import { FeatureDetail } from '@/components/FeatureDetail';
 import ReporterRainfallInput from "./ReporterRainfallInput";
 import { toast } from 'react-hot-toast';
 import { useUserLocation } from '@/components/UserLocationMarker';
+// ... import lainnya
 import 'leaflet-wind';
 
 // import { useUserLocation } from '@/hooks/useUserLocation';
 import 'leaflet.heat';
 
-
-declare module 'leaflet.heat';
+// Hapus baris ini: declare module 'leaflet.heat';
 declare module 'leaflet' {
   function heat(latlngs: any[], options?: any): any;
 }
 
+declare module 'leaflet-wind'; // tambahkan jika diperlukan
+
 declare global {
   interface Window {
     toggleLayer?: (key: string) => void;
-    toggleTerrain?: () => void;   // <-- tambahkan ini
+    toggleTerrain?: () => void;
   }
 }
 
