@@ -32,6 +32,7 @@ import { toast } from 'react-hot-toast';
 import { useUserLocation } from '@/components/UserLocationMarker';
 // ... import lainnya
 import 'leaflet-wind';
+import NotificationBell from '@/components/NotificationBell';
 
 // import { useUserLocation } from '@/hooks/useUserLocation';
 import 'leaflet.heat';
@@ -1573,8 +1574,8 @@ if (showWind && envData?.windSpeed) {
           )}
         </div>
       </div>{/* Grup Tombol Tools (seperti Google Maps) */}
-<div className="absolute bottom-24 left-4 z-[990]">
-  <div className="flex flex-col gap-2">
+      <div className="absolute bottom-24 left-4 z-[990]">
+        <div className="flex flex-col gap-2">
     {/* Tombol toggle collapse */}
     <button
       onClick={() => setToolsVisible(!toolsVisible)}
@@ -1694,7 +1695,10 @@ if (showWind && envData?.windSpeed) {
             <i className={`fa-solid ${userLocationLoading ? 'fa-spinner fa-spin' : 'fa-location-dot'}`}></i>
             {userLocationLoading ? 'Mencari...' : 'Lokasi'}
           </button>
-
+              <div className="flex items-center gap-1.5">
+                <NotificationBell />
+                {/* tombol lainnya */}
+              </div>
               {/* PROFILE / LOGIN */}
               {session ? (
                 <div className="relative">
