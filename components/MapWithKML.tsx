@@ -212,28 +212,28 @@ useEffect(() => {
 
 
 // Fetch data desa
-useEffect(() => {
-  const fetchVillage = async () => {
-    setVillageLoading(true);
-    setVillageError(null);
-    try {
-      const url = `${API_URL}/geojson/villages`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      console.log('✅ Data desa loaded:', data.features?.length, 'fitur');
-      setVillageGeo(data);
-    } catch (err: any) {
-      console.error('❌ Gagal load desa:', err);
-      setVillageError(err.message);
-      setVillageGeo(null);
-    } finally {
-      setVillageLoading(false);
-    }
-  };
+// useEffect(() => {
+//   const fetchVillage = async () => {
+//     setVillageLoading(true);
+//     setVillageError(null);
+//     try {
+//       const url = `${API_URL}/geojson/villages`;
+//       const res = await fetch(url);
+//       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+//       const data = await res.json();
+//       console.log('✅ Data desa loaded:', data.features?.length, 'fitur');
+//       setVillageGeo(data);
+//     } catch (err: any) {
+//       console.error('❌ Gagal load desa:', err);
+//       setVillageError(err.message);
+//       setVillageGeo(null);
+//     } finally {
+//       setVillageLoading(false);
+//     }
+//   };
 
-  fetchVillage();
-}, [API_URL]); 
+//   fetchVillage();
+// }, [API_URL]); 
 
 
 
