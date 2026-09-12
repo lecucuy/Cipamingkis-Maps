@@ -33,7 +33,13 @@ import { useUserLocation } from '@/components/UserLocationMarker';
 // ... import lainnya
 import 'leaflet-wind';
 import NotificationBell from '@/components/NotificationBell';
-
+import PelaporanDebit from '@/components/PelaporanDebit';
+import {
+  canReportDebit,
+  canReportCurahHujan,
+  isBendungCategory,
+  normalizeRole,
+} from '@/types/pelaporan';
 // import { useUserLocation } from '@/hooks/useUserLocation';
 import 'leaflet.heat';
 
@@ -136,6 +142,9 @@ export default function MapWithKML() {
   const [villageLoading, setVillageLoading] = useState(false);
   const [villageError, setVillageError] = useState<string | null>(null);
   const [showRainfallInput, setShowRainfallInput] = useState(false);
+  const [showDebitInput, setShowDebitInput] = useState(false);
+const [selectedBendungId, setSelectedBendungId] = useState<string | null>(null);
+const [selectedBendungName, setSelectedBendungName] = useState<string>('');
   const [selectedBuildingId, setSelectedBuildingId] = useState<string | null>(null);
   const [selectedBuildingName, setSelectedBuildingName] = useState<string>('');
   const [rainfallHistory, setRainfallHistory] = useState<any[]>([]);
@@ -328,22 +337,21 @@ useEffect(() => {
   // ===== FUNGSI BANTU UNTUK CEK BANGUNAN TERDEKAT =====
 const getNearestBuilding = useCallback((lat: number, lon: number) => {
   if (!stationPoints || stationPoints.length === 0) return null;
-  
+
   let minDist = Infinity;
-  let nearest = null;
-  
+  let nearest: any = null;
+
   for (const point of stationPoints) {
-    // Hitung jarak haversine (pakai turf atau formula sederhana)
+    if (typeof point.lat !== 'number' || typeof point.lon !== 'number') continue;
     const from = turf.point([lon, lat]);
     const to = turf.point([point.lon, point.lat]);
     const distance = turf.distance(from, to, { units: 'kilometers' });
-    
     if (distance < minDist) {
       minDist = distance;
       nearest = point;
     }
   }
-  
+
   return nearest;
 }, [stationPoints]);
 // ===== TERRAIN TOGGLE =====
@@ -1239,44 +1247,58 @@ useEffect(() => {
               if (!isPanelOpen) setIsPanelOpen(true);
             }
           } else {
-              setActiveStation(point);
-              setActiveIdx(idx);
-              setSelectedFeature(point);
-              
-              // 🔥 CEK APAKAH REPORTER DAN APAKAH INI BANGUNAN TERDEKAT
-              if (session?.user?.role === 'reporter') {
-                const reporterLat = session?.user?.lat;
-                const reporterLon = session?.user?.lon;
-                
-                if (reporterLat && reporterLon) {
-                  const nearest = getNearestBuilding(reporterLat, reporterLon);
-                  if (nearest && nearest.name === point.name) {
-                    // ✅ BENAR: bangunan ini adalah yang terdekat
-                    setSelectedBuildingId(point.name);
-                    setSelectedBuildingName(point.name);
-                    setShowRainfallInput(true);
-                  } else {
-                    // ❌ SALAH: reporter mencoba input di bangunan lain
-                    toast.error(`Anda hanya bisa input di bangunan terdekat: ${nearest?.name || 'tidak ditemukan'}`);
-                    setShowRainfallInput(false);
-                    // (Opsional) arahkan map ke bangunan terdekat
-                    if (nearest && mapRef.current) {
-                      mapRef.current.flyTo([nearest.lat, nearest.lon], 15);
-                    }
-                  }
+          setActiveStation(point);
+            setActiveIdx(idx);
+            setSelectedFeature(point);
+
+            const role = normalizeRole(session?.user?.role);
+
+            // ===== REPORTER: curah hujan (bangunan terdekat) =====
+            if (role === 'reporter' && canReportCurahHujan(session?.user?.role)) {
+              const reporterLat = session?.user?.lat;
+              const reporterLon = session?.user?.lon;
+
+              if (reporterLat && reporterLon) {
+                const nearest = getNearestBuilding(reporterLat, reporterLon);
+                if (nearest && nearest.name === point.name) {
+                  setSelectedBuildingId(point.name);
+                  setSelectedBuildingName(point.name);
+                  setShowRainfallInput(true);
                 } else {
-                  // Lokasi reporter belum diatur
-                  toast.error('Lokasi Anda belum diatur. Hubungi admin.');
+                  toast.error(
+                    `Anda hanya bisa input di bangunan terdekat: ${nearest?.name || 'tidak ditemukan'}`
+                  );
                   setShowRainfallInput(false);
+                  if (nearest && mapRef.current) {
+                    mapRef.current.flyTo([nearest.lat, nearest.lon], 15);
+                  }
                 }
               } else {
-                // Non-reporter: tidak tampilkan form
+                toast.error('Lokasi Anda belum diatur. Hubungi admin.');
                 setShowRainfallInput(false);
               }
-
-              loadBuildingMedia(point.name);
-              map.flyTo([point.lat, point.lon], 17, { duration: 1.2 });
+              setShowDebitInput(false);
             }
+            // ===== POB / SUPERVISOR: debit bendung =====
+            else if (
+              canReportDebit(session?.user?.role) &&
+              isBendungCategory(point.category)
+            ) {
+              setSelectedBendungId(point.name);
+              setSelectedBendungName(point.name);
+              setShowDebitInput(true);
+              setShowRainfallInput(false);
+            }
+            // ===== Role lain: sembunyikan semua form =====
+            else {
+              setShowRainfallInput(false);
+              setShowDebitInput(false);
+            }
+
+            loadBuildingMedia(point.name);
+            map.flyTo([point.lat, point.lon], 17, { duration: 1.2 });
+          }
+
           })
 
       if (markerGroups[category]) markerGroups[category].addLayer(marker);
@@ -1767,7 +1789,8 @@ if (showWind && envData?.windSpeed) {
             )}
  
            {/* BuildingMedia - Hanya untuk non-reporter */}
-            {activeStation && session?.user?.role !== 'reporter' && (
+            {activeStation &&
+         normalizeRole(session?.user?.role) !== 'reporter' && (
               <div className="mt-2 border-t border-gray-200 dark:border-[#2a2a4e] pt-4">
                 <BuildingMedia 
                   buildingId={activeStation.name} 
@@ -1781,21 +1804,40 @@ if (showWind && envData?.windSpeed) {
             )}
 
             {/* REPORTER RAINFALL INPUT */}
-            {showRainfallInput && selectedBuildingId && session?.user?.role === 'reporter' && (
-              <div className="mt-2">
-                <ReporterRainfallInput
-                  buildingId={selectedBuildingId}
-                  buildingName={selectedBuildingName}
-                  onSuccess={() => {
-                    setShowRainfallInput(false);
-                    // Tampilkan notifikasi sukses (pastikan toast sudah di-import)
-                    toast.success('Data curah hujan berhasil disimpan!');
-                  }}
-                  onClose={() => setShowRainfallInput(false)}
-                />
-              </div>
+            {/* REPORTER RAINFALL INPUT — HANYA REPORTER */}
+            {showRainfallInput &&
+              selectedBuildingId &&
+              canReportCurahHujan(session?.user?.role) && (
+                <div className="mt-2">
+                  <ReporterRainfallInput
+                    buildingId={selectedBuildingId}
+                    buildingName={selectedBuildingName}
+                    onSuccess={() => {
+                      setShowRainfallInput(false);
+                      toast.success('Data curah hujan berhasil disimpan!');
+                    }}
+                    onClose={() => setShowRainfallInput(false)}
+                  />
+                </div>
             )}
 
+            {/* PELAPORAN DEBIT — HANYA POB / SUPERVISOR DI BENDUNG */}
+            {showDebitInput &&
+              selectedBendungId &&
+              canReportDebit(session?.user?.role) && (
+                <div className="mt-2">
+                  <PelaporanDebit
+                    buildingId={selectedBendungId}
+                    buildingName={selectedBendungName}
+                    userRole={session?.user?.role}
+                    onSuccess={() => {
+                      setShowDebitInput(false);
+                      loadBuildingMedia(selectedBendungId);
+                    }}
+                    onClose={() => setShowDebitInput(false)}
+                  />
+                </div>
+            )}
 
             {/* SEMPADAN DETAIL */}
             {selectedSempadan && (

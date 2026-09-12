@@ -11,7 +11,10 @@ export default function RegisterForm() {
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
   const [emailCadangan, setEmailCadangan] = useState('');
-  const [role, setRole] = useState<'reporter' | 'tpop'>('reporter'); // pilihan
+  const [role, setRole] = useState<
+  'supervisor' | 'juru' | 'pob' | 'tpop' | 'reporter'
+  >('reporter');
+
   const [locationData, setLocationData] = useState<any>(null); // <- data lokasi
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
@@ -74,8 +77,11 @@ export default function RegisterForm() {
             onChange={(e) => setRole(e.target.value as any)}
             className="w-full px-4 py-2 rounded-lg border border-gray-300 dark:border-[#2a2a4e] bg-white dark:bg-[#0f0f23] text-[#1a1a2e] dark:text-white focus:outline-none focus:border-[#00c8ff]"
           >
-            <option value="reporter">Pelapor Curah Hujan (Titik)</option>
-            <option value="tpop">TPOP (Area/Wilayah)</option>
+             <option value="reporter">Pelapor Curah Hujan (Titik)</option>
+              <option value="pob">POB (Debit Bendung + Media)</option>
+              <option value="juru">Juru (Media + Area)</option>
+              <option value="supervisor">Supervisor (Full Akses)</option>
+              <option value="tpop">TPOP (Area Tetap)</option>
           </select>
         </div>
 
