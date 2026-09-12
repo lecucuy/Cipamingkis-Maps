@@ -121,6 +121,8 @@ export default function MapWithKML() {
   const layerGroupsRef = useRef<Record<string, L.LayerGroup>>({});
   const legendContainerRef = useRef<HTMLDivElement | null>(null);
   const villageLayerRef = useRef<L.LayerGroup | null>(null);
+  const buildingMediaRef = useRef<Record<string, any[]>>({});
+const stationPointsRef = useRef<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [geoData, setGeoData] = useState<any>(null);
@@ -211,7 +213,7 @@ useEffect(() => {
 }, []);
 
 
-Fetch data desa
+// Fetch data desa
 useEffect(() => {
   const fetchVillage = async () => {
     setVillageLoading(true);
@@ -579,6 +581,12 @@ const toggleTemperature = useCallback(() => {
       sessionStorage.setItem('buildingMediaTimestamp', Date.now().toString());
     }
   }, [buildingMedia]);
+
+  useEffect(() => {
+  const m: Record<string, any> = {};
+  stationPoints.forEach((p: any) => { m[p.name] = p; });
+  stationPointsRef.current = m;
+}, [stationPoints]);
 
   // ===== THEME =====
   useEffect(() => {
@@ -1489,7 +1497,7 @@ if (showWind && envData?.windSpeed) {
     }
     setTimeout(() => { if (mapRef.current) mapRef.current.invalidateSize(); }, 300);
     console.log('✅ Data selesai di-render!');
-  }, [geoData, mapReady, layerVisibility, isPanelOpen, measureMode, selectedPoints, buildingMedia, tagFilter, filteredPoints, filteredLines, filteredPolygons, L, villageGeo, showHeatmap, showAQI, showWind, showTemperature, envData]);
+  }, [geoData, mapReady, L, filteredPoints, filteredLines, filteredPolygons, layerVisibility, showHeatmap, showAQI, showWind, showTemperature, envData]);
   useEffect(() => {
     renderData();
   }, [renderData]);
