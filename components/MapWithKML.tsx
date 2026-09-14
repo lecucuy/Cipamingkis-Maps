@@ -1873,10 +1873,10 @@ if (showWind && envData?.windSpeed) {
                     buildingId={selectedBendungId}
                     buildingName={selectedBendungName}
                     userRole={session?.user?.role}
-                    onSuccess={() => {
-                      setShowDebitInput(false);
-                      loadBuildingMedia(selectedBendungId);
-                    }}
+                      onSuccess={() => {
+                        setShowDebitInput(false);
+                        loadBuildingMedia(selectedBendungId!);
+                      }}
                     onClose={() => setShowDebitInput(false)}
                   />
                 </div>
