@@ -1867,20 +1867,24 @@ if (showWind && envData?.windSpeed) {
             {/* PELAPORAN DEBIT — HANYA POB / SUPERVISOR DI BENDUNG */}
             {showDebitInput &&
               selectedBendungId &&
-              canReportDebit(session?.user?.role) && (
-                <div className="mt-2">
-                  <PelaporanDebit
-                    buildingId={selectedBendungId}
-                    buildingName={selectedBendungName}
-                    userRole={session?.user?.role}
+              canReportDebit(session?.user?.role) && (() => {
+                const bendungId = selectedBendungId; // <-- capture sebagai string non-null
+                return (
+                  <div className="mt-2">
+                    <PelaporanDebit
+                      buildingId={bendungId}
+                      buildingName={selectedBendungName}
+                      userRole={session?.user?.role}
                       onSuccess={() => {
                         setShowDebitInput(false);
-                        loadBuildingMedia(selectedBendungId!);
+                        loadBuildingMedia(bendungId);
                       }}
-                    onClose={() => setShowDebitInput(false)}
-                  />
-                </div>
-            )}
+                      onClose={() => setShowDebitInput(false)}
+                    />
+                  </div>
+                );
+              })()
+            }
 
             {/* SEMPADAN DETAIL */}
             {selectedSempadan && (
