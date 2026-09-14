@@ -1288,7 +1288,7 @@ useEffect(() => {
                   setShowDebitInput(false);
                 }
                 // Polygon role: cek apakah bangunan di dalam polygon
-                else if (['pob', 'juru', 'supervisor', 'tpop'].includes(role)) {
+                else if ((['pob', 'juru', 'supervisor', 'tpop'] as string[]).includes(role ?? '')) {
                   const poly = session?.user?.polygon as number[][] | undefined;
                   let inPoly = false;
                   if (poly && poly.length >= 3) {
