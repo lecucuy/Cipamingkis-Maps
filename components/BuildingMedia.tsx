@@ -24,21 +24,61 @@ interface MediaItem {
 interface BuildingMediaProps {
   buildingId: string;
   buildingName: string;
+  buildingLat?: number;
+  buildingLon?: number;
   onMediaChange?: () => void;
   userRole?: string;
   userPolygon?: number[][];
   userLocation?: { lat: number; lng: number } | null;
 }
 
+// ============ MODULE-LEVEL HELPERS (hoisting-safe) ============
+function ensureClosedRing(poly?: number[][] | null): number[][] | null {
+  if (!Array.isArray(poly) || poly.length < 3) return null;
+  const ring: number[][] = [];
+  for (const p of poly) {
+    if (!Array.isArray(p) || p.length < 2) return null;
+    const x = Number(p[0]);
+    const y = Number(p[1]);
+    if (!isFinite(x) || !isFinite(y)) return null;
+    ring.push([x, y]);
+  }
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  if (first[0] !== last[0] || first[1] !== last[1]) {
+    ring.push([first[0], first[1]]);
+  }
+  if (ring.length < 4) return null;
+  return ring;
+}
+
+function pointInPolygon(lat: number, lon: number, poly?: number[][] | null): boolean {
+  const ring = ensureClosedRing(poly);
+  if (!ring) return false;
+  try {
+    return turf.booleanPointInPolygon(
+      turf.point([lon, lat]),
+      turf.polygon([ring])
+    );
+  } catch (e) {
+    console.warn('pointInPolygon error:', e);
+    return false;
+  }
+}
+
 export default function BuildingMedia({
   buildingId,
   buildingName,
+  buildingLat,
+  buildingLon,
   onMediaChange,
   userRole,
   userPolygon,
   userLocation,
 }: BuildingMediaProps) {
   const { data: session } = useSession();
+
+  // ============ STATE ============
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -50,7 +90,6 @@ export default function BuildingMedia({
   const [timestamp, setTimestamp] = useState('');
   const [activeTab, setActiveTab] = useState<'photo' | 'video' | 'maintenance' | 'model_3d'>('photo');
   const [isDragging, setIsDragging] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const [previewMedia, setPreviewMedia] = useState<MediaItem | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploadIndex, setUploadIndex] = useState(0);
@@ -60,30 +99,58 @@ export default function BuildingMedia({
   const [isCarouselMode, setIsCarouselMode] = useState(false);
   const [likeCounts, setLikeCounts] = useState<Record<string, { count: number; liked: boolean }>>({});
   const [shareCounts, setShareCounts] = useState<Record<string, number>>({});
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // ============ COMPUTED PERMISSION ============
+  const roleNorm = (userRole || '').toLowerCase();
+  const isPolygonRole = ['tpop', 'pob', 'juru', 'supervisor'].includes(roleNorm);
+  const safePolygon = ensureClosedRing(userPolygon);
 
-  // ===== FUNGSI VALIDASI TPOP =====
-  const isTPOPInArea = useCallback((): boolean => {
-    if (userRole !== 'tpop') return true;
-    if (!userPolygon || userPolygon.length < 4) {
-      alert('⚠️ Wilayah kerja TPOP belum diatur. Hubungi admin.');
+  // Apakah BANGUNAN yang sedang dibuka ada di dalam polygon user?
+  const buildingInPolygon =
+    typeof buildingLat === 'number' && typeof buildingLon === 'number'
+      ? pointInPolygon(buildingLat, buildingLon, userPolygon)
+      : false;
+
+  // Apakah GPS user ada di dalam polygon? (dipakai reporter)
+  const userInPolygon = userLocation
+    ? pointInPolygon(userLocation.lat, userLocation.lng, userPolygon)
+    : false;
+
+  const canUploadHere: boolean =
+    roleNorm === 'admin' ? true :
+    isPolygonRole ? (!!safePolygon && buildingInPolygon) :
+    roleNorm === 'reporter' ? userInPolygon :
+    false;
+
+  const outsideReason: string | null =
+    roleNorm === 'admin' ? null :
+    isPolygonRole && !safePolygon
+      ? '📍 Anda belum memiliki polygon wilayah kerja. Hubungi admin.'
+      : isPolygonRole && !buildingInPolygon
+      ? `📍 Bangunan ini di luar wilayah kerja ${roleNorm.toUpperCase()}. Upload tidak diizinkan.`
+      : roleNorm === 'reporter' && !userInPolygon
+      ? '📍 Anda harus berada di dalam wilayah kerja untuk upload.'
+      : !roleNorm
+      ? '📍 Anda tidak memiliki izin upload.'
+      : null;
+
+  const filtered = media.filter((item) => item.media_type === activeTab);
+
+  // ============ UPLOAD PERMISSION CHECK ============
+  const checkUploadPermission = useCallback((): boolean => {
+    if (!session?.accessToken) {
+      alert('Login dulu!');
       return false;
     }
-    if (!userLocation) {
-      alert('⚠️ Lokasi Anda belum diketahui. Aktifkan GPS atau klik tombol Lokasi di peta.');
-      return false;
-    }
-    const point = turf.point([userLocation.lng, userLocation.lat]);
-    const polygon = turf.polygon([userPolygon]);
-    const inside = turf.booleanPointInPolygon(point, polygon);
-    if (!inside) {
-      alert('📍 Anda berada di luar wilayah kerja TPOP. Upload tidak diizinkan.');
+    if (!canUploadHere) {
+      alert(outsideReason || '📍 Upload tidak diizinkan di lokasi ini.');
       return false;
     }
     return true;
-  }, [userRole, userPolygon, userLocation]);
+  }, [session, canUploadHere, outsideReason]);
 
-  // ===== LOAD MEDIA =====
+  // ============ LOAD MEDIA ============
   const loadMedia = useCallback(async () => {
     if (!buildingId) return;
     try {
@@ -107,7 +174,7 @@ export default function BuildingMedia({
     loadMedia();
   }, [loadMedia]);
 
-  // ===== KOMPRESI GAMBAR =====
+  // ============ KOMPRESI GAMBAR ============
   const compressImage = async (file: File): Promise<File> => {
     if (!file.type.startsWith('image/')) return file;
     if (file.type === 'image/heic' || file.type === 'image/heif') return file;
@@ -143,34 +210,30 @@ export default function BuildingMedia({
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // ===== HANDLE UPLOAD MULTIPLE =====
+  // ============ HANDLE UPLOAD MULTIPLE ============
   const handleMultipleUpload = async () => {
     if (selectedFiles.length === 0) {
       alert('Pilih file dulu!');
       return;
     }
-    if (!session?.accessToken) {
-      alert('Login dulu!');
-      return;
-    }
-    if (!isTPOPInArea()) return;
+    if (!checkUploadPermission()) return;
 
     setUploading(true);
     setUploadIndex(0);
     setTotalProgress(0);
 
     for (let i = 0; i < selectedFiles.length; i++) {
-      let file = selectedFiles[i];
-      if (activeTab !== 'model_3d' && file.type.startsWith('image/') && file.type !== 'image/heic' && file.type !== 'image/heif') {
+      let fileItem = selectedFiles[i];
+      if (activeTab !== 'model_3d' && fileItem.type.startsWith('image/') && fileItem.type !== 'image/heic' && fileItem.type !== 'image/heif') {
         try {
-          file = await compressImage(file);
+          fileItem = await compressImage(fileItem);
         } catch (e) {
           console.warn('Kompresi gagal, lanjut tanpa kompresi');
         }
       }
 
       const formData = new FormData();
-      formData.append('file', file);
+      formData.append('file', fileItem);
       formData.append('building_id', buildingId);
       formData.append('media_type', mediaType);
       formData.append('description', description);
@@ -179,15 +242,15 @@ export default function BuildingMedia({
       try {
         await axios.post(`${API_URL}/buildings/media/upload`, formData, {
           headers: {
-            'Authorization': `Bearer ${session.accessToken}`,
+            'Authorization': `Bearer ${session!.accessToken}`,
             'Content-Type': 'multipart/form-data',
           },
         });
         setUploadIndex(i + 1);
         setTotalProgress(Math.round(((i + 1) / selectedFiles.length) * 100));
       } catch (err: any) {
-        console.error('Upload error for', file.name, err);
-        alert(`Gagal upload ${file.name}: ${err.response?.data?.detail || err.message}`);
+        console.error('Upload error for', fileItem.name, err);
+        alert(`Gagal upload ${fileItem.name}: ${err.response?.data?.detail || err.message}`);
       }
     }
 
@@ -245,11 +308,7 @@ export default function BuildingMedia({
       alert('Pilih file dulu!');
       return;
     }
-    if (!session?.accessToken) {
-      alert('Login dulu!');
-      return;
-    }
-    if (!isTPOPInArea()) return;
+    if (!checkUploadPermission()) return;
 
     const formData = new FormData();
     formData.append('file', file);
@@ -264,7 +323,7 @@ export default function BuildingMedia({
     try {
       await axios.post(`${API_URL}/buildings/media/upload`, formData, {
         headers: {
-          'Authorization': `Bearer ${session.accessToken}`,
+          'Authorization': `Bearer ${session!.accessToken}`,
           'Content-Type': 'multipart/form-data',
         },
         onUploadProgress: (progressEvent) => {
@@ -297,13 +356,11 @@ export default function BuildingMedia({
       });
       await loadMedia();
       alert('✅ Media berhasil dihapus!');
-    } catch (err: any) {   // ❌ FIXED: added :any
+    } catch (err: any) {
       console.error('Gagal hapus:', err);
       alert('❌ Gagal hapus media');
     }
   };
-
-  const filtered = media.filter((item) => item.media_type === activeTab);
 
   useEffect(() => {
     if (activeTab === 'model_3d') {
@@ -317,15 +374,7 @@ export default function BuildingMedia({
         setSelectedModelUrl(null);
       }
     }
-  }, [activeTab, media]);
-
-  // ===== CEK APAKAH USER BERADA DI DALAM POLYGON =====
-  const isInside = userLocation && userPolygon && turf.booleanPointInPolygon(
-    turf.point([userLocation.lng, userLocation.lat]),
-    turf.polygon([userPolygon])
-  );
-
-  if (!buildingId) return null;
+  }, [activeTab, media, selectedModelUrl]);
 
   // ===== LIKE =====
   const toggleLike = async (mediaId: string) => {
@@ -392,7 +441,7 @@ export default function BuildingMedia({
         try {
           await navigator.share(shareData);
           toast.success('✅ Berhasil dibagikan!');
-        } catch (err: any) {   // ❌ FIXED: added :any
+        } catch (err: any) {
           if (err.name !== 'AbortError') {
             console.error('Share error:', err);
             toast.error('Gagal share');
@@ -406,7 +455,7 @@ export default function BuildingMedia({
           toast.error('Gagal copy link');
         }
       }
-    } catch (err: any) {   // ❌ FIXED: added :any
+    } catch (err: any) {
       console.error('Share error:', err);
       toast.error('Gagal share media');
     }
@@ -434,7 +483,10 @@ export default function BuildingMedia({
     }
   }, [filtered]);
 
-  // ===== RENDER ===== (unchanged)
+  // ============ EARLY RETURN (setelah semua hooks) ============
+  if (!buildingId) return null;
+
+  // ============ RENDER ============
   return (
     <div className="space-y-4">
       <h4 className="text-sm font-semibold text-gray-800 dark:text-white flex items-center gap-2">
@@ -609,15 +661,15 @@ export default function BuildingMedia({
                     </div>
 
                     <div className="flex items-center gap-4 pt-2 border-t border-gray-100 dark:border-gray-800 mt-1.5">
-                      <button 
-                        className={`social-btn group ${likeCounts[item._id]?.liked ? 'text-red-500' : ''}`} 
+                      <button
+                        className={`social-btn group ${likeCounts[item._id]?.liked ? 'text-red-500' : ''}`}
                         onClick={() => toggleLike(item._id)}
                       >
                         <i className={`fa-${likeCounts[item._id]?.liked ? 'solid' : 'regular'} fa-heart text-base group-hover:scale-110 transition-transform`}></i>
                         <span className="tabular-nums">{likeCounts[item._id]?.count || 0}</span>
                       </button>
-                      <button 
-                        className="social-btn ml-auto" 
+                      <button
+                        className="social-btn ml-auto"
                         onClick={() => handleShare(item)}
                       >
                         <i className="fa-regular fa-share-from-square text-base"></i>
@@ -632,20 +684,21 @@ export default function BuildingMedia({
         </div>
       )}
 
-      {/* ===== INDIKATOR TPOP ===== */}
-      {userRole === 'tpop' && userPolygon && (
+      {/* ===== INDIKATOR WILAYAH (general) ===== */}
+      {session && (isPolygonRole || roleNorm === 'reporter') && (
         <div className={`text-xs p-2 rounded-lg border ${
-          isInside
+          canUploadHere
             ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800 text-green-700 dark:text-green-300'
             : 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800 text-yellow-700 dark:text-yellow-300'
         }`}>
           <i className={`fa-solid ${
-            isInside ? 'fa-check-circle' : 'fa-exclamation-triangle'
+            canUploadHere ? 'fa-check-circle' : 'fa-exclamation-triangle'
           } mr-1`}></i>
-          {isInside
-            ? '✅ Anda berada di dalam wilayah kerja TPOP'
-            : '⚠️ Pastikan Anda berada di dalam wilayah kerja TPOP untuk upload'
-          }
+          {canUploadHere
+            ? (isPolygonRole
+                ? '✅ Bangunan ini di dalam wilayah kerja Anda'
+                : '✅ Anda berada di dalam wilayah kerja')
+            : (outsideReason || '⚠️ Pastikan bangunan berada di dalam wilayah kerja Anda untuk upload')}
         </div>
       )}
 
@@ -655,16 +708,25 @@ export default function BuildingMedia({
             Tambah {activeTab === 'maintenance' ? 'Perbaikan' : activeTab === 'video' ? 'Video' : activeTab === 'model_3d' ? 'Model 3D' : 'Foto'}
           </p>
 
+          {!canUploadHere && outsideReason && (
+            <div className="mb-2 text-[11px] text-red-500 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-2 py-1.5">
+              <i className="fa-solid fa-lock mr-1"></i>
+              {outsideReason}
+            </div>
+          )}
+
           <div
             className={`relative border-2 border-dashed rounded-xl p-4 transition-all ${
               isDragging
                 ? 'border-[#00c8ff] bg-[#00c8ff]/5'
-                : 'border-gray-300 dark:border-gray-600 hover:border-[#00c8ff]'
+                : canUploadHere
+                ? 'border-gray-300 dark:border-gray-600 hover:border-[#00c8ff]'
+                : 'border-gray-200 dark:border-gray-700 opacity-60'
             }`}
-            onDragEnter={handleDragEnter}
-            onDragLeave={handleDragLeave}
-            onDragOver={handleDragOver}
-            onDrop={(e) => {
+            onDragEnter={canUploadHere ? handleDragEnter : undefined}
+            onDragLeave={canUploadHere ? handleDragLeave : undefined}
+            onDragOver={canUploadHere ? handleDragOver : undefined}
+            onDrop={canUploadHere ? (e) => {
               e.preventDefault();
               setIsDragging(false);
               const files = e.dataTransfer.files;
@@ -672,12 +734,13 @@ export default function BuildingMedia({
                 const validFiles = Array.from(files).filter(f => f.size <= 100 * 1024 * 1024);
                 setSelectedFiles(prev => [...prev, ...validFiles]);
               }
-            }}
+            } : (e) => { e.preventDefault(); }}
           >
             <input
               type="file"
               ref={fileInputRef}
               multiple
+              disabled={!canUploadHere}
               accept={
                 activeTab === 'video'
                   ? 'video/*'
@@ -756,9 +819,9 @@ export default function BuildingMedia({
             <button
               type="button"
               onClick={handleMultipleUpload}
-              disabled={selectedFiles.length === 0 || uploading}
+              disabled={selectedFiles.length === 0 || uploading || !canUploadHere}
               className={`w-full py-2 text-xs font-medium rounded-lg transition-all ${
-                selectedFiles.length === 0 || uploading
+                selectedFiles.length === 0 || uploading || !canUploadHere
                   ? 'bg-gray-300 dark:bg-gray-600 text-gray-500 cursor-not-allowed'
                   : 'bg-[#00c8ff] text-white hover:bg-[#00c8ff]/90 shadow-md hover:shadow-lg'
               }`}
@@ -767,6 +830,8 @@ export default function BuildingMedia({
                 <span>
                   Uploading {uploadIndex}/{selectedFiles.length} ({totalProgress}%)
                 </span>
+              ) : !canUploadHere ? (
+                <span>🔒 Upload tidak diizinkan di sini</span>
               ) : (
                 <span>📤 Upload {selectedFiles.length} file</span>
               )}

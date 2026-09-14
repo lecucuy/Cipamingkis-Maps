@@ -1262,46 +1262,79 @@ useEffect(() => {
             const role = normalizeRole(session?.user?.role);
 
             // ===== REPORTER: curah hujan (bangunan terdekat) =====
-            if (role === 'reporter' && canReportCurahHujan(session?.user?.role)) {
-              const reporterLat = session?.user?.lat;
-              const reporterLon = session?.user?.lon;
+              const isCHBuilding = /curah\s*hujan/i.test(point.name);
 
-              if (reporterLat && reporterLon) {
-                const nearest = getNearestBuilding(reporterLat, reporterLon);
-                if (nearest && nearest.name === point.name) {
-                  setSelectedBuildingId(point.name);
-                  setSelectedBuildingName(point.name);
-                  setShowRainfallInput(true);
-                } else {
-                  toast.error(
-                    `Anda hanya bisa input di bangunan terdekat: ${nearest?.name || 'tidak ditemukan'}`
-                  );
-                  setShowRainfallInput(false);
-                  if (nearest && mapRef.current) {
-                    mapRef.current.flyTo([nearest.lat, nearest.lon], 15);
+              // A. Bangunan CURAH HUJAN
+              if (isCHBuilding) {
+                // Reporter: cek bangunan terdekat
+                if (role === 'reporter' && canReportCurahHujan(session?.user?.role)) {
+                  const reporterLat = session?.user?.lat;
+                  const reporterLon = session?.user?.lon;
+                  if (reporterLat && reporterLon) {
+                    const nearest = getNearestBuilding(reporterLat, reporterLon);
+                    if (nearest && nearest.name === point.name) {
+                      setSelectedBuildingId(point.name);
+                      setSelectedBuildingName(point.name);
+                      setShowRainfallInput(true);
+                    } else {
+                      toast.error(`Anda hanya bisa input di bangunan terdekat: ${nearest?.name || 'tidak ditemukan'}`);
+                      setShowRainfallInput(false);
+                      if (nearest && mapRef.current) mapRef.current.flyTo([nearest.lat, nearest.lon], 15);
+                    }
+                  } else {
+                    toast.error('Lokasi Anda belum diatur.');
+                    setShowRainfallInput(false);
                   }
+                  setShowDebitInput(false);
                 }
-              } else {
-                toast.error('Lokasi Anda belum diatur. Hubungi admin.');
+                // Polygon role: cek apakah bangunan di dalam polygon
+                else if (['pob', 'juru', 'supervisor', 'tpop'].includes(role)) {
+                  const poly = session?.user?.polygon as number[][] | undefined;
+                  let inPoly = false;
+                  if (poly && poly.length >= 3) {
+                    try {
+                      const ring = [...poly];
+                      if (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) {
+                        ring.push(ring[0]);
+                      }
+                      inPoly = turf.booleanPointInPolygon(
+                        turf.point([point.lon, point.lat]),
+                        turf.polygon([ring])
+                      );
+                    } catch (e) {
+                      console.warn('polygon check failed:', e);
+                    }
+                  }
+                  if (inPoly) {
+                    setSelectedBuildingId(point.name);
+                    setSelectedBuildingName(point.name);
+                    setShowRainfallInput(true);
+                  } else {
+                    toast.error('Bangunan ini di luar wilayah kerja Anda.');
+                    setShowRainfallInput(false);
+                  }
+                  setShowDebitInput(false);
+                }
+                else {
+                  setShowRainfallInput(false);
+                  setShowDebitInput(false);
+                }
+              }
+              // B. Bangunan BENDUNG (non-curah-hujan)
+              else if (
+                canReportDebit(session?.user?.role) &&
+                isBendungCategory(point.category)
+              ) {
+                setSelectedBendungId(point.name);
+                setSelectedBendungName(point.name);
+                setShowDebitInput(true);
                 setShowRainfallInput(false);
               }
-              setShowDebitInput(false);
-            }
-            // ===== POB / SUPERVISOR: debit bendung =====
-            else if (
-              canReportDebit(session?.user?.role) &&
-              isBendungCategory(point.category)
-            ) {
-              setSelectedBendungId(point.name);
-              setSelectedBendungName(point.name);
-              setShowDebitInput(true);
-              setShowRainfallInput(false);
-            }
-            // ===== Role lain: sembunyikan semua form =====
-            else {
-              setShowRainfallInput(false);
-              setShowDebitInput(false);
-            }
+              // C. Role lain
+              else {
+                setShowRainfallInput(false);
+                setShowDebitInput(false);
+              }
 
             loadBuildingMedia(point.name);
             map.flyTo([point.lat, point.lon], 17, { duration: 1.2 });
@@ -1800,9 +1833,11 @@ if (showWind && envData?.windSpeed) {
             {activeStation &&
          normalizeRole(session?.user?.role) !== 'reporter' && (
               <div className="mt-2 border-t border-gray-200 dark:border-[#2a2a4e] pt-4">
-                <BuildingMedia 
-                  buildingId={activeStation.name} 
+                <BuildingMedia
+                  buildingId={activeStation.name}
                   buildingName={activeStation.name}
+                  buildingLat={activeStation.lat}       
+                  buildingLon={activeStation.lon}  
                   onMediaChange={() => loadBuildingMedia(activeStation.name)}
                   userRole={session?.user?.role}
                   userPolygon={session?.user?.polygon}
@@ -1811,7 +1846,7 @@ if (showWind && envData?.windSpeed) {
               </div>
             )}
 
-            {/* REPORTER RAINFALL INPUT */}
+
             {/* REPORTER RAINFALL INPUT — HANYA REPORTER */}
             {showRainfallInput &&
               selectedBuildingId &&

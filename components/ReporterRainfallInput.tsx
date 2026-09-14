@@ -1,7 +1,7 @@
 // components/ReporterRainfallInput.tsx
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import axios from 'axios';
 import { useSession } from 'next-auth/react';
 
@@ -12,11 +12,14 @@ interface ReporterRainfallInputProps {
   onClose?: () => void;
 }
 
-export default function ReporterRainfallInput({ 
-  buildingId, 
-  buildingName, 
-  onSuccess, 
-  onClose 
+// Role yang boleh input curah hujan
+const ALLOWED_ROLES = ['reporter', 'pob', 'juru', 'supervisor', 'tpop'];
+
+export default function ReporterRainfallInput({
+  buildingId,
+  buildingName,
+  onSuccess,
+  onClose,
 }: ReporterRainfallInputProps) {
   const { data: session } = useSession();
   const [rainfall, setRainfall] = useState<number>(0);
@@ -28,15 +31,14 @@ export default function ReporterRainfallInput({
   const [error, setError] = useState<string | null>(null);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL;
+  const roleNorm = (session?.user?.role || '').toLowerCase();
+  const canInput = ALLOWED_ROLES.includes(roleNorm);
 
-  // Cek apakah user adalah reporter
-  const isReporter = session?.user?.role === 'reporter';
-
-  if (!isReporter) {
+  if (!canInput) {
     return (
       <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-xl p-4">
         <p className="text-yellow-700 dark:text-yellow-300 text-sm">
-          ⚠️ Hanya reporter yang bisa mengupdate data curah hujan.
+          ⚠️ Role Anda tidak diizinkan menginput curah hujan.
         </p>
       </div>
     );
@@ -46,17 +48,21 @@ export default function ReporterRainfallInput({
     setLoading(true);
     setError(null);
     try {
-      await axios.post(`${API_URL}/reporter/rainfall`, {
-        building_id: buildingId,
-        rainfall_mm: rainfall,
-        water_level: waterLevel,
-        status: status,
-        notes: notes
-      }, {
-        headers: {
-          Authorization: `Bearer ${session?.accessToken}`
+      await axios.post(
+        `${API_URL}/reporter/rainfall`,
+        {
+          building_id: buildingId,
+          rainfall_mm: rainfall,
+          water_level: waterLevel,
+          status: status,
+          notes: notes,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${session?.accessToken}`,
+          },
         }
-      });
+      );
       setSuccess(true);
       setTimeout(() => {
         if (onSuccess) onSuccess();
@@ -82,7 +88,7 @@ export default function ReporterRainfallInput({
           </p>
         </div>
         {onClose && (
-          <button 
+          <button
             onClick={onClose}
             className="w-6 h-6 rounded-full hover:bg-gray-100 dark:hover:bg-[#2a2a4e] flex items-center justify-center text-gray-500 dark:text-gray-400"
           >
@@ -93,7 +99,9 @@ export default function ReporterRainfallInput({
 
       {success ? (
         <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-3 text-center">
-          <p className="text-green-600 dark:text-green-400 font-medium">✅ Data berhasil disimpan!</p>
+          <p className="text-green-600 dark:text-green-400 font-medium">
+            ✅ Data berhasil disimpan!
+          </p>
         </div>
       ) : (
         <>
@@ -116,7 +124,7 @@ export default function ReporterRainfallInput({
               onChange={(e) => setRainfall(parseFloat(e.target.value))}
               className="w-full h-2 bg-gray-200 dark:bg-[#2a2a4e] rounded-lg appearance-none cursor-pointer"
               style={{
-                accentColor: rainfall === 0 ? '#EF4444' : '#00c8ff'
+                accentColor: rainfall === 0 ? '#EF4444' : '#00c8ff',
               }}
             />
             <div className="flex justify-between text-[9px] text-gray-400 mt-0.5">
@@ -136,13 +144,13 @@ export default function ReporterRainfallInput({
                 { value: 'normal', label: 'Normal', icon: 'fa-water', color: 'blue' },
                 { value: 'kering', label: 'Kering', icon: 'fa-ban', color: 'red' },
                 { value: 'siaga', label: 'Siaga', icon: 'fa-triangle-exclamation', color: 'yellow' },
-                { value: 'banjir', label: 'Banjir', icon: 'fa-water', color: 'orange' }
+                { value: 'banjir', label: 'Banjir', icon: 'fa-water', color: 'orange' },
               ].map((opt) => (
                 <button
                   key={opt.value}
                   onClick={() => setStatus(opt.value as any)}
                   className={`px-2 py-1.5 rounded-lg text-[9px] font-medium transition-all border ${
-                    status === opt.value 
+                    status === opt.value
                       ? `bg-${opt.color}-500 text-white border-${opt.color}-500 shadow-lg shadow-${opt.color}-500/30`
                       : `bg-gray-100 dark:bg-[#2a2a4e] text-gray-600 dark:text-gray-400 border-transparent hover:bg-gray-200 dark:hover:bg-[#3a3a5e]`
                   }`}
@@ -154,7 +162,7 @@ export default function ReporterRainfallInput({
             </div>
           </div>
 
-          {/* WATER LEVEL (opsional) */}
+          {/* WATER LEVEL */}
           <div className="mb-3">
             <label className="text-xs font-medium text-gray-700 dark:text-gray-300 block mb-1">
               📏 Tinggi Muka Air (opsional)
@@ -166,7 +174,9 @@ export default function ReporterRainfallInput({
                 max="10"
                 step="0.01"
                 value={waterLevel ?? ''}
-                onChange={(e) => setWaterLevel(e.target.value ? parseFloat(e.target.value) : null)}
+                onChange={(e) =>
+                  setWaterLevel(e.target.value ? parseFloat(e.target.value) : null)
+                }
                 placeholder="cm"
                 className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-[#0a0a1a] border border-gray-200 dark:border-[#2a2a4e] text-sm focus:outline-none focus:border-[#00c8ff] focus:ring-2 focus:ring-[#00c8ff]/30"
               />
@@ -211,11 +221,13 @@ export default function ReporterRainfallInput({
             )}
           </button>
 
-          {/* INFORMASI "KERING" */}
           {rainfall === 0 && (
             <div className="mt-3 text-xs text-orange-600 dark:text-orange-400 flex items-center gap-1.5 bg-orange-50 dark:bg-orange-900/20 p-2 rounded-lg border border-orange-200 dark:border-orange-800">
               <i className="fa-solid fa-circle-exclamation"></i>
-              <span>Status "Kering" dipilih karena curah hujan 0 mm. Pastikan kondisi lapangan memang tidak ada air.</span>
+              <span>
+                Status "Kering" dipilih karena curah hujan 0 mm. Pastikan kondisi
+                lapangan memang tidak ada air.
+              </span>
             </div>
           )}
         </>

@@ -71,9 +71,13 @@ export function canReportDebit(role?: string | null): boolean {
   return r ? ROLE_PERMISSIONS[r].debit : false;
 }
 
-export function canReportCurahHujan(role?: string | null): boolean {
+export function canReportCurahHujan(role?: string): boolean {
   const r = normalizeRole(role);
-  return r ? ROLE_PERMISSIONS[r].curahHujan : false;
+  return r === 'reporter'
+      || r === 'pob'
+      || r === 'juru'
+      || r === 'supervisor'
+      || r === 'tpop';
 }
 
 export function canReportMedia(role?: string | null): boolean {
