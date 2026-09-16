@@ -79,8 +79,8 @@ function getPermission(role: string | undefined, mode: 'point' | 'polygon'): Map
       return {
         canSelectExisting: true,  // hanya lihat & pilih polygon yang sudah ditentukan
         canDrawPoint: false,
-        canDrawPolygon: false,
-        canClear: false,
+        canDrawPolygon: true,
+        canClear: true,
         hint: 'Pilih area yang telah ditentukan (tidak dapat menggambar area baru)',
       };
     default:
