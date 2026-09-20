@@ -2,6 +2,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useSession } from 'next-auth/react';
 import axios from 'axios';
 import { DebitDailyReport, DebitHourlyRow } from '@/types/pelaporan';
 
@@ -17,6 +18,9 @@ export interface UseDebitReportResult {
 }
 
 export function useDebitReport(buildingId: string): UseDebitReportResult {
+  const { data: session } = useSession();
+  const token = session?.accessToken;
+
   const [reports, setReports] = useState<DebitDailyReport[]>([]);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -24,11 +28,19 @@ export function useDebitReport(buildingId: string): UseDebitReportResult {
 
   const refresh = useCallback(async () => {
     if (!buildingId) return;
+    if (!token) {
+      setReports([]);
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
       const res = await axios.get(
-        `${API_URL}/buildings/${encodeURIComponent(buildingId)}/debit`
+        `${API_URL}/buildings/${encodeURIComponent(buildingId)}/debit`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
       );
       const list: DebitDailyReport[] = Array.isArray(res.data)
         ? res.data
@@ -39,38 +51,51 @@ export function useDebitReport(buildingId: string): UseDebitReportResult {
       setReports(list);
     } catch (err: any) {
       if (err.response?.status !== 404) {
-        setError(err.response?.data?.detail || err.message || 'Gagal memuat laporan debit');
+        setError(
+          err.response?.data?.detail ||
+            err.message ||
+            'Gagal memuat laporan debit'
+        );
       }
       setReports([]);
     } finally {
       setLoading(false);
     }
-  }, [buildingId]);
+  }, [buildingId, token]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
 
   const submit = useCallback(
     async (tanggal: string, rows: DebitHourlyRow[]) => {
       if (!buildingId) throw new Error('buildingId kosong');
+      if (!token) throw new Error('Anda belum login. Silakan login ulang.');
+
       setSubmitting(true);
       setError(null);
       try {
         const res = await axios.post(
           `${API_URL}/buildings/${encodeURIComponent(buildingId)}/debit`,
-          { tanggal, rows }
+          { tanggal, rows },
+          {
+            headers: { Authorization: `Bearer ${token}` },
+          }
         );
         await refresh();
         return res.data as DebitDailyReport;
       } catch (err: any) {
         const msg =
-          err.response?.data?.detail || err.message || 'Gagal menyimpan laporan debit';
+          err.response?.data?.detail ||
+          err.message ||
+          'Gagal menyimpan laporan debit';
         setError(msg);
         throw new Error(msg);
       } finally {
         setSubmitting(false);
       }
     },
-    [buildingId, refresh]
+    [buildingId, refresh, token]
   );
 
   return { reports, loading, submitting, error, submit, refresh };

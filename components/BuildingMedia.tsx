@@ -1,7 +1,7 @@
 // components/BuildingMedia.tsx
 'use client';
 import * as turf from '@turf/turf';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSession } from 'next-auth/react';
 import axios from 'axios';
 import imageCompression from 'browser-image-compression';
@@ -12,6 +12,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
 interface MediaItem {
   _id: string;
+  user_id: string;
   building_id: string;
   media_type: 'photo' | 'video' | 'maintenance' | 'model_3d';
   file_type: string;
@@ -50,6 +51,16 @@ function ensureClosedRing(poly?: number[][] | null): number[][] | null {
   }
   if (ring.length < 4) return null;
   return ring;
+}
+
+function getUserIdFromToken(token?: string | null): string | null {
+  if (!token) return null;
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    return payload?.sub || null;
+  } catch {
+    return null;
+  }
 }
 
 function pointInPolygon(lat: number, lon: number, poly?: number[][] | null): boolean {
@@ -101,18 +112,26 @@ export default function BuildingMedia({
   const [shareCounts, setShareCounts] = useState<Record<string, number>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // ====== STATE EDIT ======
+  const [editingMedia, setEditingMedia] = useState<MediaItem | null>(null);
+  const [editDescription, setEditDescription] = useState('');
+  const [editTimestamp, setEditTimestamp] = useState('');
+  const [editMediaType, setEditMediaType] = useState<'photo' | 'video' | 'maintenance' | 'model_3d'>('photo');
+  const [saving, setSaving] = useState(false);
+
+  // ====== CURRENT USER ======
+  const currentUserId = getUserIdFromToken(session?.accessToken);
+
   // ============ COMPUTED PERMISSION ============
   const roleNorm = (userRole || '').toLowerCase();
   const isPolygonRole = ['tpop', 'pob', 'juru', 'supervisor'].includes(roleNorm);
   const safePolygon = ensureClosedRing(userPolygon);
 
-  // Apakah BANGUNAN yang sedang dibuka ada di dalam polygon user?
   const buildingInPolygon =
     typeof buildingLat === 'number' && typeof buildingLon === 'number'
       ? pointInPolygon(buildingLat, buildingLon, userPolygon)
       : false;
 
-  // Apakah GPS user ada di dalam polygon? (dipakai reporter)
   const userInPolygon = userLocation
     ? pointInPolygon(userLocation.lat, userLocation.lng, userPolygon)
     : false;
@@ -122,6 +141,14 @@ export default function BuildingMedia({
     isPolygonRole ? (!!safePolygon && buildingInPolygon) :
     roleNorm === 'reporter' ? userInPolygon :
     false;
+
+  const canModifyMedia = (item: MediaItem): boolean => {
+    if (!currentUserId) return false;
+    if (roleNorm === 'admin') return true;
+    if (item.user_id !== currentUserId) return false;
+    if (isPolygonRole) return buildingInPolygon;
+    return true;
+  };
 
   const outsideReason: string | null =
     roleNorm === 'admin' ? null :
@@ -136,6 +163,16 @@ export default function BuildingMedia({
       : null;
 
   const filtered = media.filter((item) => item.media_type === activeTab);
+
+  // ===== KEY STABIL (biar useEffect gak spam) =====
+  const mediaIdsKey = useMemo(
+    () => filtered.map((item) => item._id).sort().join('|'),
+    [filtered]
+  );
+
+  // ===== CACHE refs (fetch sekali per ID) =====
+  const fetchedShareRef = useRef<Set<string>>(new Set());
+  const fetchedLikeRef = useRef<Set<string>>(new Set());
 
   // ============ UPLOAD PERMISSION CHECK ============
   const checkUploadPermission = useCallback((): boolean => {
@@ -173,6 +210,83 @@ export default function BuildingMedia({
   useEffect(() => {
     loadMedia();
   }, [loadMedia]);
+
+  // ============ FETCH LIKE STATUS (sekali per ID) ============
+  useEffect(() => {
+    const ids = mediaIdsKey ? mediaIdsKey.split('|') : [];
+    const toFetch = ids.filter(id => !fetchedLikeRef.current.has(id));
+    if (toFetch.length === 0) return;
+
+    let cancelled = false;
+
+    (async () => {
+      const headers = session?.accessToken
+        ? { Authorization: `Bearer ${session.accessToken}` }
+        : {};
+
+      const results = await Promise.all(
+        toFetch.map(async (id) => {
+          try {
+            const res = await axios.get(
+              `${API_URL}/media/${id}/like/status`,
+              { headers }
+            );
+            return { id, liked: res.data.liked, like_count: res.data.like_count };
+          } catch {
+            return { id, liked: false, like_count: 0 };
+          }
+        })
+      );
+
+      if (cancelled) return;
+
+      toFetch.forEach(id => fetchedLikeRef.current.add(id));
+
+      setLikeCounts(prev => {
+        const next = { ...prev };
+        results.forEach(r => {
+          next[r.id] = { count: r.like_count, liked: r.liked };
+        });
+        return next;
+      });
+    })();
+
+    return () => { cancelled = true; };
+  }, [mediaIdsKey, session?.accessToken]);
+
+  // ============ FETCH SHARE COUNT (sekali per ID) ============
+  useEffect(() => {
+    const ids = mediaIdsKey ? mediaIdsKey.split('|') : [];
+    const toFetch = ids.filter(id => !fetchedShareRef.current.has(id));
+    if (toFetch.length === 0) return;
+
+    let cancelled = false;
+
+    (async () => {
+      const results = await Promise.all(
+        toFetch.map(async (id) => {
+          try {
+            const res = await axios.get(`${API_URL}/media/${id}/share/count`);
+            return { id, count: res.data.share_count };
+          } catch {
+            return { id, count: 0 };
+          }
+        })
+      );
+
+      if (cancelled) return;
+
+      toFetch.forEach(id => fetchedShareRef.current.add(id));
+
+      setShareCounts(prev => {
+        const next = { ...prev };
+        results.forEach(r => { next[r.id] = r.count; });
+        return next;
+      });
+    })();
+
+    return () => { cancelled = true; };
+  }, [mediaIdsKey]);
 
   // ============ KOMPRESI GAMBAR ============
   const compressImage = async (file: File): Promise<File> => {
@@ -362,6 +476,47 @@ export default function BuildingMedia({
     }
   };
 
+  const openEditModal = (item: MediaItem) => {
+    if (!canModifyMedia(item)) {
+      alert('❌ Anda hanya bisa mengedit media milik Anda di wilayah kerja Anda.');
+      return;
+    }
+    setEditingMedia(item);
+    setEditDescription(item.description || '');
+    setEditMediaType(item.media_type);
+    if (item.timestamp) {
+      const d = new Date(item.timestamp);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      setEditTimestamp(
+        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+      );
+    } else {
+      setEditTimestamp('');
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingMedia) return;
+    setSaving(true);
+    try {
+      const body: any = { description: editDescription };
+      if (editMediaType !== editingMedia.media_type) body.media_type = editMediaType;
+      if (editTimestamp) body.timestamp = editTimestamp;
+
+      await axios.put(`${API_URL}/buildings/media/${editingMedia._id}`, body, {
+        headers: { Authorization: `Bearer ${session?.accessToken}` },
+      });
+      toast.success('✅ Media berhasil diperbarui');
+      setEditingMedia(null);
+      await loadMedia();
+      onMediaChange?.();
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || '❌ Gagal memperbarui media');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   useEffect(() => {
     if (activeTab === 'model_3d') {
       const models = media.filter(m => m.media_type === 'model_3d');
@@ -391,31 +546,6 @@ export default function BuildingMedia({
       toast.error('Gagal like media');
     }
   };
-
-  useEffect(() => {
-    const fetchLikeStatus = async () => {
-      const mediaIds = filtered.map(item => item._id);
-      const statuses = await Promise.all(
-        mediaIds.map(async (id) => {
-          try {
-            const headers = session?.accessToken ? { Authorization: `Bearer ${session.accessToken}` } : {};
-            const res = await axios.get(`${API_URL}/media/${id}/like/status`, { headers });
-            return { id, ...res.data };
-          } catch {
-            return { id, liked: false, like_count: 0 };
-          }
-        })
-      );
-      const newCounts: Record<string, { count: number; liked: boolean }> = {};
-      statuses.forEach(s => {
-        newCounts[s.id] = { count: s.like_count, liked: s.liked };
-      });
-      setLikeCounts(newCounts);
-    };
-    if (filtered.length > 0) {
-      fetchLikeStatus();
-    }
-  }, [filtered, session]);
 
   // ===== SHARE =====
   const handleShare = async (mediaItem: MediaItem) => {
@@ -461,29 +591,7 @@ export default function BuildingMedia({
     }
   };
 
-  useEffect(() => {
-    const fetchShareCounts = async () => {
-      const mediaIds = filtered.map(item => item._id);
-      const counts = await Promise.all(
-        mediaIds.map(async (id) => {
-          try {
-            const res = await axios.get(`${API_URL}/media/${id}/share/count`);
-            return { id, count: res.data.share_count };
-          } catch {
-            return { id, count: 0 };
-          }
-        })
-      );
-      const newCounts: Record<string, number> = {};
-      counts.forEach(c => { newCounts[c.id] = c.count; });
-      setShareCounts(newCounts);
-    };
-    if (filtered.length > 0) {
-      fetchShareCounts();
-    }
-  }, [filtered]);
-
-  // ============ EARLY RETURN (setelah semua hooks) ============
+  // ============ EARLY RETURN ============
   if (!buildingId) return null;
 
   // ============ RENDER ============
@@ -621,15 +729,26 @@ export default function BuildingMedia({
                       {index + 1} / {filtered.length}
                     </div>
 
-                    {session && (
-                      <button
-                        type="button"
-                        onClick={() => handleDelete(item._id)}
-                        className="absolute top-3 right-3 z-10 w-8 h-8 rounded-full bg-red-500/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600 shadow-lg"
-                      >
-                        <i className="fa-solid fa-trash text-xs"></i>
-                      </button>
-                    )}
+                      {canModifyMedia(item) && (
+                        <div className="absolute top-3 right-3 z-10 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            type="button"
+                            onClick={() => openEditModal(item)}
+                            className="w-8 h-8 rounded-full bg-blue-500/85 text-white flex items-center justify-center hover:bg-blue-600 shadow-lg"
+                            title="Edit"
+                          >
+                            <i className="fa-solid fa-pen text-xs"></i>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(item)}
+                            className="w-8 h-8 rounded-full bg-red-500/85 text-white flex items-center justify-center hover:bg-red-600 shadow-lg"
+                            title="Hapus"
+                          >
+                            <i className="fa-solid fa-trash text-xs"></i>
+                          </button>
+                        </div>
+                      )}
                   </div>
 
                   <div className="p-3 space-y-1.5">
@@ -888,6 +1007,107 @@ export default function BuildingMedia({
           </div>
         </div>
       )}
+
+      {editingMedia && (
+          <div
+            className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+            onClick={() => !saving && setEditingMedia(null)}
+          >
+            <div
+              className="bg-white dark:bg-[#1a1a2e] rounded-2xl shadow-2xl w-full max-w-md p-5 space-y-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-gray-800 dark:text-white flex items-center gap-2">
+                  <i className="fa-solid fa-pen text-[#00c8ff]"></i>
+                  Edit Media
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => !saving && setEditingMedia(null)}
+                  className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                >
+                  <i className="fa-solid fa-xmark"></i>
+                </button>
+              </div>
+
+              {/* Preview thumbnail */}
+              <div className="rounded-lg overflow-hidden bg-black/5 dark:bg-black/20 max-h-40 flex items-center justify-center">
+                {editingMedia.file_type === 'videos' ? (
+                  <video src={editingMedia.file_url} className="max-h-40" muted />
+                ) : editingMedia.file_type === 'images' ? (
+                  <img src={editingMedia.file_url} className="max-h-40 object-contain" alt="preview" />
+                ) : (
+                  <i className="fa-solid fa-file text-4xl text-gray-400 py-10"></i>
+                )}
+              </div>
+
+              {/* Media Type */}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">
+                  Kategori
+                </label>
+                <select
+                  value={editMediaType}
+                  onChange={(e) => setEditMediaType(e.target.value as any)}
+                  className="w-full px-3 py-2 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-[#0f0f1e] focus:outline-none focus:ring-2 focus:ring-[#00c8ff]"
+                >
+                  <option value="photo">📷 Foto</option>
+                  <option value="video">🎥 Video</option>
+                  <option value="maintenance">🔧 Perbaikan</option>
+                  <option value="model_3d">🧊 Model 3D</option>
+                </select>
+              </div>
+
+              {/* Deskripsi */}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">
+                  Deskripsi
+                </label>
+                <textarea
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  rows={2}
+                  className="w-full px-3 py-2 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-[#0f0f1e] focus:outline-none focus:ring-2 focus:ring-[#00c8ff]"
+                  placeholder="Deskripsi media..."
+                />
+              </div>
+
+              {/* Timestamp */}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">
+                  Tanggal & Waktu
+                </label>
+                <input
+                  type="datetime-local"
+                  value={editTimestamp}
+                  onChange={(e) => setEditTimestamp(e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-[#0f0f1e] focus:outline-none focus:ring-2 focus:ring-[#00c8ff]"
+                />
+              </div>
+
+              {/* Actions */}
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => setEditingMedia(null)}
+                  className="flex-1 py-2 text-xs rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={handleSaveEdit}
+                  className="flex-1 py-2 text-xs rounded-lg bg-[#00c8ff] text-white hover:bg-[#00c8ff]/90 disabled:opacity-50 font-medium"
+                >
+                  {saving ? 'Menyimpan...' : '💾 Simpan'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
     </div>
   );
 }

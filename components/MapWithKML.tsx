@@ -22,6 +22,7 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import * as Esri from 'esri-leaflet';
+import { useLatestDebits } from '@/hooks/useLatestDebits';
 // MODUL HASHTAG
 import { extractHashtags } from '@/utils/hashtagHelpers';
 import { useHashtagFilter } from '@/hooks/useHashtagFilter';
@@ -42,7 +43,8 @@ import {
 } from '@/types/pelaporan';
 // import { useUserLocation } from '@/hooks/useUserLocation';
 import 'leaflet.heat';
-
+import MusimTanamPanel from '@/components/MusimTanamPanel';
+import { useMusimTanam, MUSIM_TANAM_STATUS } from '@/hooks/useMusimTanam';
 // Hapus baris ini: declare module 'leaflet.heat';
 declare module 'leaflet' {
   function heat(latlngs: any[], options?: any): any;
@@ -106,6 +108,31 @@ export const CATEGORY_CONFIG: Record<string, any> = {
 }
  };
 
+ // ============ FLOW HELPERS ============
+function debitToDuration(debit: number): number {
+  if (debit <= 0) return 0;
+  if (debit < 2)  return 2.0;
+  if (debit < 10) return 1.2;
+  if (debit < 30) return 0.7;
+  return 0.4;
+}
+
+function debitToColor(debit: number): string {
+  if (debit <= 0) return '#00E5FF';
+  if (debit < 2)  return '#7DD3FC';
+  if (debit < 10) return '#38BDF8';
+  if (debit < 30) return '#0EA5E9';
+  return '#0369A1';
+}
+
+function debitToWidth(debit: number): number {
+  if (debit <= 0) return 2;
+  if (debit < 2)  return 3;
+  if (debit < 10) return 4;
+  if (debit < 30) return 5;
+  return 6;
+}
+
 interface WeatherData {
   temperature: number;
   humidity: number;
@@ -122,7 +149,7 @@ export default function MapWithKML() {
   const legendContainerRef = useRef<HTMLDivElement | null>(null);
   const villageLayerRef = useRef<L.LayerGroup | null>(null);
   const buildingMediaRef = useRef<Record<string, any[]>>({});
-const stationPointsRef = useRef<Record<string, any>>({});
+  const stationPointsRef = useRef<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [geoData, setGeoData] = useState<any>(null);
@@ -171,6 +198,109 @@ const stationPointsRef = useRef<Record<string, any>>({});
     return `${Math.round(meters)} m`;
   };
 
+  const [showMusimTanam, setShowMusimTanam] = useState(false);
+  const { reportByPolygon: musimTanamByPolygon } = useMusimTanam();
+
+  // ====== FLOW ANIMATION STATE ======
+  const [showFlowAnimation, setShowFlowAnimation] = useState(true);
+  // Ambil semua ID bendung
+  const bendungIds = useMemo(
+    () =>
+      stationPoints
+        .filter((p: any) => isBendungCategory(p.category))
+        .map((p: any) => p.name),
+    [stationPoints]
+  );
+
+  // Hook ambil debit terbaru — polling 60s
+  const latestDebits = useLatestDebits(bendungIds);
+
+  // Map: nama saluran → info flow
+  // Map: nama saluran → info flow
+  const saluranFlowMap = useMemo(() => {
+    const map: Record<
+      string,
+      {
+        debit: number;
+        duration: number;
+        color: string;
+        width: number;
+        from: string;
+        tanggal: string;
+        jam: string;
+      }
+    > = {};
+
+    if (!geoData?.lines?.length || !latestDebits || !stationPointsRef.current) {
+      console.log('[saluranFlowMap] skip — data belum siap', {
+        hasLines: !!geoData?.lines?.length,
+        hasDebits: !!latestDebits,
+        hasRef: !!stationPointsRef.current,
+      });
+      return map;
+    }
+
+    console.log(
+      '[saluranFlowMap] bendung dgn debit:',
+      Object.keys(latestDebits).length,
+      Object.entries(latestDebits).map(([k, v]: any) => `${k}=${v.debit}`)
+    );
+
+    Object.values(latestDebits).forEach((flow: any) => {
+      const bendung = stationPointsRef.current[flow.buildingId];
+      if (!bendung) {
+        console.warn(`[saluranFlowMap] ${flow.buildingId} gak ketemu di stationPoints`);
+        return;
+      }
+      if (flow.debit <= 0) {
+        console.warn(`[saluranFlowMap] ${flow.buildingId} debit=${flow.debit} → skip`);
+        return;
+      }
+
+      // Cari saluran yang titik awalnya paling dekat dengan bendung
+      let bestLine: any = null;
+      let bestDist = Infinity;
+
+      geoData.lines.forEach((line: any) => {
+        if (!line.path?.length) return;
+        const start = line.path[0]; // [lat, lon]
+        const d = turf.distance(
+          turf.point([bendung.lon, bendung.lat]),
+          turf.point([start[1], start[0]]),
+          { units: 'kilometers' }
+        );
+        if (d < bestDist) {
+          bestDist = d;
+          bestLine = line;
+        }
+      });
+
+      console.log(
+        `[saluranFlowMap] ${flow.buildingId} → saluran terdekat: "${bestLine?.name}" (${bestDist.toFixed(3)} km)`
+      );
+
+      // ✅ Threshold dinaikin dari 0.5 → 3 km
+      if (bestLine && bestDist < 3) {
+        map[bestLine.name] = {
+          debit: flow.debit,
+          duration: debitToDuration(flow.debit),
+          color: debitToColor(flow.debit),
+          width: debitToWidth(flow.debit),
+          from: flow.buildingId,
+          tanggal: flow.tanggal,
+          jam: flow.jam,
+        };
+      } else {
+        console.warn(
+          `[saluranFlowMap] ${flow.buildingId} — saluran terdekat (${bestLine?.name}) terlalu jauh (${bestDist.toFixed(3)} km > 3 km)`
+        );
+      }
+    });
+
+    console.log('[saluranFlowMap] hasil:', Object.keys(map));
+    return map;
+  }, [geoData, latestDebits]);
+
 
 const {
   userLocation,
@@ -210,6 +340,51 @@ useEffect(() => {
     setL(leaflet.default);
   };
   loadLibraries();
+}, []);
+
+
+
+useEffect(() => {
+  const style = document.createElement('style');
+  style.id = 'flow-anim-style';
+  style.textContent = `
+    /* Keyframes */
+    @keyframes flow-dash {
+      to { stroke-dashoffset: -80; }
+    }
+    @keyframes flow-ripple {
+      to { stroke-dashoffset: -160; }
+    }
+    @keyframes flow-glow {
+      0%, 100% { opacity: 0.25; }
+      50%      { opacity: 0.55; }
+    }
+
+    /* !important WAJIB — override inline style Leaflet */
+    .flow-water-main {
+      animation: flow-dash var(--fd, 1.5s) linear infinite !important;
+    }
+    .flow-water-ripple {
+      stroke: rgba(255, 255, 255, 0.9) !important;
+      animation: flow-ripple calc(var(--fd, 1.5s) * 0.55) linear infinite !important;
+      pointer-events: none !important;
+    }
+    .flow-water-glow {
+      animation: flow-glow calc(var(--fd, 1.5s) * 2) ease-in-out infinite !important;
+      pointer-events: none !important;
+    }
+    .flow-paused {
+      animation-play-state: paused !important;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .flow-water-main,
+      .flow-water-ripple,
+      .flow-water-glow { animation: none !important; }
+    }
+  `;
+  document.head.appendChild(style);
+  return () => document.getElementById('flow-anim-style')?.remove();
 }, []);
 
 
@@ -271,28 +446,54 @@ useEffect(() => {
   }, [API_URL]);
 
 
+  // Konversi Debit (m³/s) ke Durasi Animasi (Detik) yang Realistis
+function debitToDuration(debit: number): number {
+  if (debit <= 0) return 0; // Air diam / mati
+  
+  // Menggunakan skala logaritmik agar perubahan debit tinggi tidak membuat animasi terlampau cepat/patah
+  const duration = 2.5 / Math.pow(debit, 0.35); 
+  
+  // Batasi durasi minimum 0.3 detik (deras) dan maksimum 3.0 detik (lambat)
+  return Math.max(0.3, Math.min(3.0, Number(duration.toFixed(2))));
+}
+
 useEffect(() => {
   const style = document.createElement('style');
+  style.id = 'flow-anim-style';
   style.textContent = `
-    .village-label-google {
-      background: rgba(255, 255, 255, 0.85) !important;
-      backdrop-filter: blur(2px) !important;
-      color: #222 !important;
-      font-size: 10px !important;
-      font-weight: 500 !important;
-      padding: 2px 6px !important;
-      border-radius: 3px !important;
-      border: none !important;
-      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15) !important;
-      font-family: 'Segoe UI', Roboto, Arial, sans-serif !important;
-      text-shadow: none !important;
+    /* Keyframe Aliran Air Utama */
+    @keyframes flow-dash {
+      0% { stroke-dashoffset: 240; }
+      100% { stroke-dashoffset: 0; }
+    }
+
+    /* Keyframe Riak/Buih Permukaan (Lebih Cepat) */
+    @keyframes flow-ripple {
+      0% { stroke-dashoffset: 180; transform: translateY(0); }
+      50% { transform: translateY(-0.5px); }
+      100% { stroke-dashoffset: 0; transform: translateY(0); }
+    }
+
+    /* Layer Utama Air */
+    .flow-water-main {
+      animation: flow-dash var(--fd, 1.2s) linear infinite !important;
+    }
+
+    /* Layer Riak/Buih Air di Tengah Saluran */
+    .flow-water-ripple {
+      stroke: #ffffff !important;
+      animation: flow-ripple calc(var(--fd, 1.2s) * 0.6) linear infinite !important;
       pointer-events: none !important;
-      white-space: nowrap !important;
-      letter-spacing: 0.2px !important;
+      opacity: 0.8;
+    }
+
+    /* Efek Glowing / Air Jernih */
+    .flow-water-glow {
+      filter: drop-shadow(0px 0px 3px #38bdf8);
     }
   `;
   document.head.appendChild(style);
-  return () => { document.head.removeChild(style); };
+  return () => { document.getElementById('flow-anim-style')?.remove(); };
 }, []);
 
   // ===== FUNGSI KATEGORISASI =====
@@ -717,7 +918,7 @@ useEffect(() => {
 
     L.control.zoom({ position: 'bottomright' }).addTo(map);
     
-
+  // Taruh di file terpisah atau di atas component
 
     
     // ===== LEGEND (sama seperti sebelumnya, menggunakan L dan CATEGORY_CONFIG) =====
@@ -888,6 +1089,37 @@ useEffect(() => {
   };
 }, [toggleTerrain]);
 
+
+// Auto-pause animasi saat user pan/zoom — balik lagi setelah selesai
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    const pauseAnim = () => {
+      document.querySelectorAll('.flow-active').forEach(el => {
+        el.classList.add('flow-paused');
+      });
+    };
+
+    const resumeAnim = () => {
+      document.querySelectorAll('.flow-active').forEach(el => {
+        el.classList.remove('flow-paused');
+      });
+    };
+
+    map.on('movestart', pauseAnim);
+    map.on('zoomstart', pauseAnim);
+    map.on('moveend', resumeAnim);
+    map.on('zoomend', resumeAnim);
+
+    return () => {
+      map.off('movestart', pauseAnim);
+      map.off('zoomstart', pauseAnim);
+      map.off('moveend', resumeAnim);
+      map.off('zoomend', resumeAnim);
+    };
+  }, [mapReady]);
+
   useEffect(() => {
     if (!legendContainerRef.current) return;
     const isMobile = window.innerWidth < 640;
@@ -1027,8 +1259,19 @@ useEffect(() => {
       const category = poly.category || 'default';
       const cfg = CATEGORY_CONFIG[category] || CATEGORY_CONFIG['default'];
       let color = cfg.color, fillColor = cfg.color, weight = 2, dashArray = 'none', fillOpacity = 0.3;
+      // ✅ SESUDAH — pakai warna musim tanam kalau ada
       if (category === 'LUASAN_SAWAH') {
-        color = '#FDD835'; fillColor = '#FDD835'; fillOpacity = 0.4;
+        const mt = musimTanamByPolygon[poly.name];
+        if (mt && MUSIM_TANAM_STATUS[mt.status as keyof typeof MUSIM_TANAM_STATUS]) {
+          const meta = MUSIM_TANAM_STATUS[mt.status as keyof typeof MUSIM_TANAM_STATUS];
+          color = meta.color;
+          fillColor = meta.color;
+          fillOpacity = 0.55;
+        } else {
+          color = '#FDD835';
+          fillColor = '#FDD835';
+          fillOpacity = 0.4;
+        }
       } else if (category === 'BANJIR_POLY') {
         color = '#1E88E5'; fillColor = '#1E88E5'; fillOpacity = 0.3;
       }
@@ -1039,13 +1282,40 @@ useEffect(() => {
           <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">${poly.name || 'Area'}</h4>
           <p style="margin:0;font-size:11px;color:#666;">${cfg.label}</p>
       `;
-      if (category === 'LUASAN_SAWAH' && poly.area_ha) {
-        popupContent += `<p style="margin:4px 0 0 0;font-size:12px;color:#FDD835;font-weight:bold;">🌾 Luas: ${Math.round(poly.area_ha)} Ha</p>`;
-        layer.on('click', () => {
-          setSelectedSawah({ name: poly.name || 'Luasan Sawah', area_ha: poly.area_ha, coordinates: poly.path });
-          if (!isPanelOpen) setIsPanelOpen(true);
-        });
-      }
+        if (category === 'LUASAN_SAWAH' && poly.area_ha) {
+          const mt = musimTanamByPolygon[poly.name];
+          const statusMeta = mt
+            ? MUSIM_TANAM_STATUS[mt.status as keyof typeof MUSIM_TANAM_STATUS]
+            : null;
+
+          popupContent += `
+            <p style="margin:4px 0 0 0;font-size:12px;color:#FDD835;font-weight:bold;">🌾 Luas: ${Math.round(poly.area_ha)} Ha</p>
+          `;
+
+          if (statusMeta) {
+            popupContent += `
+              <div style="margin-top:6px;padding:6px 8px;background:#f0fdf4;border-radius:6px;border:1px solid #bbf7d0;">
+                <div style="display:flex;align-items:center;gap:6px;">
+                  <span style="width:12px;height:12px;border-radius:3px;background:${statusMeta.color};display:inline-block;"></span>
+                  <span style="font-size:11px;font-weight:600;color:#15803d;">${statusMeta.label}</span>
+                </div>
+                ${mt.keterangan ? `<div style="font-size:10px;color:#666;margin-top:2px;">${mt.keterangan}</div>` : ''}
+              </div>
+            `;
+          } else {
+            popupContent += `<p style="margin:4px 0 0 0;font-size:10px;color:#999;">Belum ada laporan musim tanam</p>`;
+          }
+
+          layer.on('click', () => {
+            setSelectedSawah({
+              name: poly.name || 'Luasan Sawah',
+              area_ha: poly.area_ha,
+              coordinates: poly.path,
+              musimTanam: mt,
+            });
+            if (!isPanelOpen) setIsPanelOpen(true);
+          });
+        }
       popupContent += `</div>`;
       layer.bindPopup(popupContent);
 
@@ -1070,49 +1340,149 @@ useEffect(() => {
       const isSaluran = category === 'SALURAN_DEFAULT' || category === 'default';
 
         // 🔥 EFEK GLOW UNTUK SALURAN
-        if (isSaluran) {
-          const glow = L.polyline(line.path, {
-            color: '#00E5FF',
-            weight: 8,
-            opacity: 0.1,
-            interactive: false,
-          });
-          const main = L.polyline(line.path, {
-            color: '#00E5FF',
-            weight: 3,
-            opacity: 0.9,
-            lineJoin: 'round',
-          });
-          const center = L.polyline(line.path, {
-            color: '#FFFFFF',
-            weight: 1,
-            opacity: 0.3,
-            interactive: false,
-          });
-          const group = L.layerGroup([glow, center, main]);
+          if (isSaluran) {
+            // 🚫 DAFTAR SALURAN MATI / TIDAK TERTIMPA AIR
+            const deadCanalNames = [
+              'AS Saluran Sekunder Cilangkara',
+              'AS Saluran Pegadungan',
+              'AS Saluran Sekunder Jati',
+              'As Saluran Sekunder Jati', // Variasi penulisan 'As'
+            ];
 
-          // Bind popup & event ke main
-          let popupContent = `
-            <div style="font-family:Inter;min-width:150px;">
-              <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Saluran'}</h4>
-              <p style="margin:0;font-size:11px;color:#666;">${cfg.label}</p>
-          `;
-          if (line.length) {
-            popupContent += `<p style="margin:4px 0 0 0;font-size:12px;color:#00E5FF;font-weight:bold;">📏 Panjang: ${formatLength(line.length)}</p>`;
-          }
-          popupContent += `</div>`;
-          main.bindPopup(popupContent);
-          main.on('click', () => {
-            if (line.length) {
-              setSelectedSaluran({ name: line.name || 'Saluran', length: line.length });
-              if (!isPanelOpen) setIsPanelOpen(true);
+            // Pengecekan nama saluran (case-insensitive agar lebih aman)
+            const isDeadCanal = deadCanalNames.some(
+              (deadName) => deadName.toLowerCase() === (line.name || '').toLowerCase()
+            );
+
+            const rawFlow = showFlowAnimation ? saluranFlowMap[line.name] : null;
+
+            // ===== CASE 1: SALURAN MATI (Tanpa Animasi Aliran) =====
+            if (isDeadCanal) {
+              const base = L.polyline(line.path, {
+                color: '#64748B', // Warna abu-abu / mati
+                weight: 3,
+                opacity: 0.6,
+                lineJoin: 'round',
+                dashArray: '6 6',  // Garis putus-putus penanda tidak aktif
+              });
+
+              base.bindPopup(`
+                <div style="font-family:Inter;min-width:180px;">
+                  <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Saluran'}</h4>
+                  <p style="margin:0;font-size:11px;color:#666;">${cfg.label}</p>
+                  ${line.length ? `<p style="margin:4px 0 0 0;font-size:12px;color:#64748B;font-weight:bold;">📏 Panjang: ${formatLength(line.length)}</p>` : ''}
+                  <div style="margin-top:8px;padding:6px;background:#f1f5f9;border-radius:6px;color:#ef4444;font-size:11px;font-weight:600;display:flex;align-items:center;gap:4px;">
+                    🚫 Saluran Non-Aktif / Mati
+                  </div>
+                </div>
+              `);
+
+              base.on('click', () => {
+                setSelectedSaluran({ name: line.name || 'Saluran', length: line.length || 0 });
+                if (!isPanelOpen) setIsPanelOpen(true);
+              });
+
+              if (!lineGroups['SALURAN_DEFAULT']) lineGroups['SALURAN_DEFAULT'] = L.layerGroup();
+              lineGroups['SALURAN_DEFAULT'].addLayer(base);
+              return;
+            }
+
+        // ===== CASE 2: SALURAN AKTIF & TEST MODE (4 Layer Air) =====
+        const defaultFlow = {
+          color: '#00E5FF',
+          width: 3,
+          duration: 1.5,
+          debit: 0,
+          from: 'Pintu Air Primary',
+          tanggal: 'Test Mode',
+          jam: '00:00',
+        };
+
+        const flow = rawFlow ? { ...defaultFlow, ...rawFlow } : defaultFlow;
+
+        // 1. GLOW
+        const glow = L.polyline(line.path, {
+          color: flow.color,
+          weight: flow.width + 10,
+          opacity: 0.3,
+          lineJoin: 'round',
+          lineCap: 'round',
+          className: 'flow-water-glow',
+          interactive: false,
+        });
+
+        // 2. BASE
+        const base = L.polyline(line.path, {
+          color: flow.color,
+          weight: flow.width + 2,
+          opacity: 0.75,
+          lineJoin: 'round',
+          lineCap: 'round',
+          interactive: false,
+        });
+
+        // 3. MAIN
+        const main = L.polyline(line.path, {
+          color: '#BAE6FD',
+          weight: flow.width,
+          opacity: 0.95,
+          lineJoin: 'round',
+          lineCap: 'round',
+          dashArray: '28 14',
+          className: 'flow-water-main',
+        });
+
+        // 4. RIPPLE
+        const ripple = L.polyline(line.path, {
+          color: '#FFFFFF',
+          weight: Math.max(2, flow.width - 1),
+          opacity: 0.9,
+          lineJoin: 'round',
+          lineCap: 'round',
+          dashArray: '5 120',
+          className: 'flow-water-ripple',
+          interactive: false,
+        });
+
+        // Set CSS var duration & dataset
+        [glow, main, ripple].forEach((layer) => {
+          layer.on('add', () => {
+            const el = (layer as any)._path as SVGPathElement | undefined;
+            if (el) {
+              el.style.setProperty('--fd', `${flow.duration}s`);
+              el.dataset.fd = String(flow.duration);
             }
           });
+        });
 
-          if (!lineGroups['SALURAN_DEFAULT']) lineGroups['SALURAN_DEFAULT'] = L.layerGroup();
-          lineGroups['SALURAN_DEFAULT'].addLayer(group);
-          return; // <-- LANGSUNG SKIP ke line berikutnya
-        }
+        // Popup & Click Interaksi
+        main.bindPopup(`
+          <div style="font-family:Inter;min-width:220px;">
+            <h4 style="margin:0 0 6px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Saluran'}</h4>
+            <p style="margin:0 0 6px 0;font-size:11px;color:#666;">💧 Dialiri dari <b>${flow.from}</b></p>
+            <div style="padding:10px;background:#f0f9ff;border-radius:8px;border:1px solid #bae6fd;">
+              <div style="font-size:18px;font-weight:700;color:#0369a1;font-family:monospace;">
+                ${flow.debit.toFixed(2)} m³/d
+              </div>
+              <div style="font-size:10px;color:#666;margin-top:4px;">
+                Update: ${flow.tanggal} · ${flow.jam}
+              </div>
+            </div>
+            ${line.length ? `<p style="margin:8px 0 0 0;font-size:12px;color:#00E5FF;font-weight:bold;">📏 Panjang: ${formatLength(line.length)}</p>` : ''}
+          </div>
+        `);
+
+        main.on('click', () => {
+          setSelectedSaluran({ name: line.name || 'Saluran', length: line.length || 0, flow });
+          if (!isPanelOpen) setIsPanelOpen(true);
+        });
+
+        const group = L.layerGroup([glow, base, ripple, main]);
+        if (!lineGroups['SALURAN_DEFAULT']) lineGroups['SALURAN_DEFAULT'] = L.layerGroup();
+        lineGroups['SALURAN_DEFAULT'].addLayer(group);
+
+        return;
+      }
       // KEJURON
       if (isKejuron) {
         const layer = L.polyline(line.path, { color: '#AAAAAA', weight: 1.5, dashArray: '2, 6', opacity: 0.3, lineJoin: 'round' });
@@ -1215,6 +1585,10 @@ useEffect(() => {
         }
       });
     });
+
+    
+// Ambil semua ID bendung
+
 
     points.forEach((point: any, idx: number) => {
       if (!point || typeof point.lat !== 'number' || typeof point.lon !== 'number') return;
@@ -1530,7 +1904,7 @@ if (showWind && envData?.windSpeed) {
     }
     setTimeout(() => { if (mapRef.current) mapRef.current.invalidateSize(); }, 300);
     console.log('✅ Data selesai di-render!');
-  }, [geoData, mapReady, L, filteredPoints, filteredLines, filteredPolygons, layerVisibility, showHeatmap, showAQI, showWind, showTemperature, envData]);
+  }, [geoData, mapReady, L, filteredPoints, filteredLines, filteredPolygons, layerVisibility, showHeatmap, showAQI, showWind, showTemperature, envData, saluranFlowMap, showFlowAnimation, musimTanamByPolygon])
   useEffect(() => {
     renderData();
   }, [renderData]);
@@ -1561,6 +1935,9 @@ if (showWind && envData?.windSpeed) {
       </div>
     );
   }
+
+
+  // ====== FLOW ANIMATION ======
 
   
 
@@ -2026,6 +2403,25 @@ if (showWind && envData?.windSpeed) {
           <i className={`fa-solid ${isPanelOpen ? 'fa-chevron-right' : 'fa-chevron-up'} sm:fa-chevron-left`}></i>
         </button>
       </div>
+        {/* FOOTER */}
+    <footer className="flex-shrink-0 w-full border-t border-gray-200 dark:border-[#2a2a4e] bg-white dark:bg-[#0f0f23] px-4 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-gray-500 dark:text-gray-400">
+        <div className="flex items-center gap-2">
+          <span className="font-mono font-semibold text-[#00c8ff]">v0.1 A (dev)</span>
+          <span className="text-gray-300 dark:text-gray-600">·</span>
+          <span>
+            © 2026 Powered by <span className="font-semibold text-gray-700 dark:text-gray-200">IlookaAi</span>
+          </span>
+        </div>
+        <div className="flex items-center gap-1 text-gray-400 dark:text-gray-500">
+          <i className="fa-solid fa-droplet text-[#00c8ff] text-[9px]" />
+          <span>
+            <span className="font-medium text-gray-600 dark:text-gray-300">Cipamingkis</span> member of{' '}
+            <span className="font-medium text-gray-600 dark:text-gray-300">Perum Jasa Tirta II</span>
+          </span>
+        </div>
+      </div>
+    </footer>
     </div>
   );
 }
