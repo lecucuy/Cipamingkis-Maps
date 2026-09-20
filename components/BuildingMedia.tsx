@@ -741,7 +741,7 @@ export default function BuildingMedia({
                           </button>
                           <button
                             type="button"
-                            onClick={() => handleDelete(item)}
+                            onClick={() => handleDelete(item._id)}  
                             className="w-8 h-8 rounded-full bg-red-500/85 text-white flex items-center justify-center hover:bg-red-600 shadow-lg"
                             title="Hapus"
                           >
