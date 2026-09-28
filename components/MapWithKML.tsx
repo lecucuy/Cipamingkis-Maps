@@ -44,7 +44,7 @@ import {
 // import { useUserLocation } from '@/hooks/useUserLocation';
 import 'leaflet.heat';
 import MusimTanamPanel from '@/components/MusimTanamPanel';
-import { useMusimTanam, MUSIM_TANAM_STATUS } from '@/hooks/useMusimTanam';
+import {  MUSIM_TANAM_STATUS } from '@/hooks/useMusimTanam';
 // Hapus baris ini: declare module 'leaflet.heat';
 declare module 'leaflet' {
   function heat(latlngs: any[], options?: any): any;
@@ -100,12 +100,6 @@ export const CATEGORY_CONFIG: Record<string, any> = {
   "BENDUNG": { icon: "fa-dam", color: "#FF6B6B", label: "Bendung", type: "point" },
   "KOLAM": { icon: "fa-water", color: "#4ECDC4", label: "Kolam", type: "point" },
   "KEJURON": { icon: "fa-border-all", color: "#AAAAAA", label: "Batas Kejuron", type: "line" },
-"BATAS_DESA": {
-  icon: "fa-house",
-  color: "#8B5CF6",
-  label: "Desa/Kelurahan",
-  type: "polygon"
-}
  };
 
  // ============ FLOW HELPERS ============
@@ -197,9 +191,39 @@ export default function MapWithKML() {
     if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km`;
     return `${Math.round(meters)} m`;
   };
+const [showMusimTanam, setShowMusimTanam] = useState(false);
 
-  const [showMusimTanam, setShowMusimTanam] = useState(false);
-  const { reportByPolygon: musimTanamByPolygon } = useMusimTanam();
+// 🔥 Fetch musim tanam langsung (public, tanpa butuh login)
+const [musimTanamByPolygon, setMusimTanamByPolygon] = useState<Record<string, any>>({});
+
+const fetchMusimTanam = useCallback(async () => {
+  try {
+    const headers = session?.accessToken
+      ? { Authorization: `Bearer ${session.accessToken}` }
+      : {};
+
+    const res = await axios.get(`${API_URL}/musim-tanam/laporan`, { headers });
+    const reports = res.data?.reports || [];
+    const map: Record<string, any> = {};
+    reports.forEach((r: any) => {
+      map[r.polygon_id] = r;
+    });
+    console.log('[MusimTanam] ✅ fetched:', reports.length, 'reports');
+    console.log('[MusimTanam] keys:', Object.keys(map));
+    setMusimTanamByPolygon(map);
+  } catch (err: any) {
+    console.error('[MusimTanam] ❌ fetch error:', err.response?.status, err.message);
+  }
+}, [session?.accessToken]);
+
+useEffect(() => {
+  fetchMusimTanam();
+}, [fetchMusimTanam]);
+
+useEffect(() => {
+  fetchMusimTanam();
+}, [fetchMusimTanam]);
+
 
   // ====== FLOW ANIMATION STATE ======
   const [showFlowAnimation, setShowFlowAnimation] = useState(true);
@@ -316,6 +340,56 @@ const {
     const userLon = session?.user?.lon;
     
 
+useEffect(() => {
+  console.log('🔍 RAW role:', session?.user?.role);
+  console.log('🔍 normalizeRole:', normalizeRole(session?.user?.role));
+  console.log('🔍 session.user:', session?.user);
+}, [session]);
+
+
+// 🔥 Deteksi Juru Bengkok (konsisten dgn backend)
+    const isJuruBengkok = useMemo(() => {
+      const u: any = session?.user;
+      if (normalizeRole(u?.role) !== 'juru') return false;
+      // OPSI A: field khusus
+      if ((u?.juruType || '').toLowerCase() === 'bengkok') return true;
+      if ((u?.juru_type || '').toLowerCase() === 'bengkok') return true;
+      // OPSI B: dari email / username / full_name
+      const email = (u?.email || '').toLowerCase();
+      const username = (u?.username || '').toLowerCase();
+      const fullName = (u?.name || u?.full_name || '').toLowerCase();
+      return email.includes('bengkok') || username.includes('bengkok') || fullName.includes('bengkok');
+    }, [session]);
+
+    // 🔥 Hashtag khusus Juru Bengkok
+    const JURU_BENGKOK_TAG = 'saluranindukcibarusah';
+
+
+    
+  // ===== MUSIM TANAM POLYGONS (khusus LUASAN_SAWAH) =====
+  const musimTanamPolygons = useMemo(() => {
+    let polys = (geoData?.polygons || [])
+      .filter((p: any) => p.category === 'LUASAN_SAWAH');
+
+    // 🔥 Kalau Juru Bengkok → saring hanya polygon ber-hashtag #SaluranIndukCibarusah
+    if (isJuruBengkok) {
+      polys = polys.filter((p: any) => {
+        const tags: string[] = (p.tags || []).map((t: string) => t.toLowerCase());
+        return tags.includes(JURU_BENGKOK_TAG);
+      });
+    }
+
+    return polys.map((p: any) => ({
+      name: p.name,
+      area_ha: p.area_ha || 0,
+      path: p.path,
+    }));
+  }, [geoData?.polygons, isJuruBengkok]);
+
+
+
+
+
   // ===== SEARCH =====
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return stationPoints;
@@ -387,30 +461,6 @@ useEffect(() => {
   return () => document.getElementById('flow-anim-style')?.remove();
 }, []);
 
-
-// Fetch data desa
-useEffect(() => {
-  const fetchVillage = async () => {
-    setVillageLoading(true);
-    setVillageError(null);
-    try {
-      const url = `${API_URL}/geojson/villages`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      console.log('✅ Data desa loaded:', data.features?.length, 'fitur');
-      setVillageGeo(data);
-    } catch (err: any) {
-      console.error('❌ Gagal load desa:', err);
-      setVillageError(err.message);
-      setVillageGeo(null);
-    } finally {
-      setVillageLoading(false);
-    }
-  };
-
-  fetchVillage();
-}, [API_URL]); 
 
 
 
@@ -861,7 +911,6 @@ const toggleTemperature = useCallback(() => {
     "LUASAN_SAWAH": true,
     "BANJIR_POLY": true,
     "SALURAN_DEFAULT": true,
-    "BATAS_DESA": true
   });
 
 
@@ -1293,28 +1342,51 @@ useEffect(() => {
           `;
 
           if (statusMeta) {
+            // 🔥 Ambil nama reporter
+            const reporterName =
+              mt.reporter_name ||
+              (mt.reporter_email ? mt.reporter_email.split('@')[0] : null) ||
+              'Anonim';
+            const reporterRole = mt.reporter_role || null;
+
+            // Format tanggal update
+            let updatedAtStr = '';
+            if (mt.updated_at) {
+              try {
+                const d = new Date(mt.updated_at);
+                updatedAtStr = d.toLocaleDateString('id-ID', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                });
+              } catch {}
+            }
+
             popupContent += `
-              <div style="margin-top:6px;padding:6px 8px;background:#f0fdf4;border-radius:6px;border:1px solid #bbf7d0;">
+              <div style="margin-top:6px;padding:8px;background:#f0fdf4;border-radius:8px;border:1px solid #bbf7d0;">
                 <div style="display:flex;align-items:center;gap:6px;">
                   <span style="width:12px;height:12px;border-radius:3px;background:${statusMeta.color};display:inline-block;"></span>
-                  <span style="font-size:11px;font-weight:600;color:#15803d;">${statusMeta.label}</span>
+                  <span style="font-size:12px;font-weight:600;color:#15803d;">${statusMeta.label}</span>
                 </div>
-                ${mt.keterangan ? `<div style="font-size:10px;color:#666;margin-top:2px;">${mt.keterangan}</div>` : ''}
+                ${mt.keterangan ? `<div style="font-size:10px;color:#666;margin-top:4px;">${mt.keterangan}</div>` : ''}
+              </div>
+
+              <!-- 🔥 TRANSPARANSI: Uploader & Waktu -->
+              <div style="margin-top:6px;padding:6px 8px;background:#f8fafc;border-radius:6px;border:1px solid #e2e8f0;">
+                <div style="display:flex;align-items:center;gap:5px;">
+                  <div style="width:18px;height:18px;border-radius:50%;background:#16A34A;color:white;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:bold;">
+                    ${reporterName.charAt(0).toUpperCase()}
+                  </div>
+                  
+                  <span style="font-size:10px;font-weight:700;color:#16A34A;">@${reporterName}</span>
+                  ${reporterRole ? `<span style="font-size:8px;background:#dcfce7;color:#15803d;padding:1px 5px;border-radius:8px;font-weight:600;text-transform:uppercase;">${reporterRole}</span>` : ''}
+                </div>
+                ${updatedAtStr ? `<div style="font-size:9px;color:#94a3b8;margin-top:3px;display:flex;align-items:center;gap:3px;">📅 Update: ${updatedAtStr}</div>` : ''}
               </div>
             `;
           } else {
             popupContent += `<p style="margin:4px 0 0 0;font-size:10px;color:#999;">Belum ada laporan musim tanam</p>`;
           }
-
-          layer.on('click', () => {
-            setSelectedSawah({
-              name: poly.name || 'Luasan Sawah',
-              area_ha: poly.area_ha,
-              coordinates: poly.path,
-              musimTanam: mt,
-            });
-            if (!isPanelOpen) setIsPanelOpen(true);
-          });
         }
       popupContent += `</div>`;
       layer.bindPopup(popupContent);
@@ -2023,10 +2095,22 @@ if (showWind && envData?.windSpeed) {
     >
       <i className={`fa-solid ${toolsVisible ? 'fa-chevron-left' : 'fa-chevron-right'}`}></i>
     </button>
+    
 
     {/* Tombol-tombol mode (muncul jika toolsVisible true) */}
     {toolsVisible && (
       <div className="flex flex-col gap-2 mt-1">
+        
+            
+        {/* 🔥 PANEL MUSIM TANAM — RENDER ACTUAL PANEL */}
+      {showMusimTanam && normalizeRole(session?.user?.role) === 'juru' && (
+        <MusimTanamPanel
+          polygons={musimTanamPolygons}
+          userRole={session?.user?.role}
+          onClose={() => setShowMusimTanam(false)}
+          onSuccess={fetchMusimTanam}
+        />
+      )}
         {/* Terrain */}
         <button
           onClick={toggleTerrain}
@@ -2052,14 +2136,6 @@ if (showWind && envData?.windSpeed) {
         >
           <i className="fa-solid fa-fire"></i>
         </button>
-
-        {/* AQI */}
-
-
-        {/* Wind */}
-
-
-        {/* Temperature (toggle) */}
 
       </div>
     )}
@@ -2296,25 +2372,59 @@ if (showWind && envData?.windSpeed) {
             )}
 
             {/* LUASAN SAWAH */}
-            {selectedSawah && (
-              <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-xl p-4 animate-fadeIn">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <h4 className="text-sm font-semibold text-yellow-700 dark:text-yellow-300 flex items-center gap-2">
-                      <i className="fa-solid fa-crop"></i> Luasan Sawah
-                    </h4>
-                    <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 font-medium">{selectedSawah.name}</p>
-                    <div className="mt-2 flex items-baseline gap-2">
-                      <span className="text-2xl font-bold text-yellow-600 dark:text-yellow-400">{Math.round(selectedSawah.area_ha)}</span>
-                      <span className="text-xs text-gray-500 dark:text-gray-400">Hektar</span>
-                    </div>
+          {selectedSawah && (
+            <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-xl p-4 animate-fadeIn">
+              <div className="flex items-start justify-between">
+                <div className="flex-1">
+                  <h4 className="text-sm font-semibold text-yellow-700 dark:text-yellow-300 flex items-center gap-2">
+                    <i className="fa-solid fa-crop"></i> Luasan Sawah
+                  </h4>
+                  <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 font-medium">
+                    {selectedSawah.name}
+                  </p>
+                  <div className="mt-2 flex items-baseline gap-2">
+                    <span className="text-2xl font-bold text-yellow-600 dark:text-yellow-400">
+                      {Math.round(selectedSawah.area_ha)}
+                    </span>
+                    <span className="text-xs text-gray-500 dark:text-gray-400">Hektar</span>
                   </div>
-                  <button onClick={() => setSelectedSawah(null)} className="w-6 h-6 rounded-full hover:bg-yellow-200 dark:hover:bg-yellow-700/40 flex items-center justify-center text-yellow-500 dark:text-yellow-400 transition-colors">
-                    <i className="fa-solid fa-xmark"></i>
-                  </button>
+
+                  {/* 🔥 TRANSPARANSI */}
+                  {selectedSawah.musimTanam && (
+                    <div className="mt-3 pt-2 border-t border-yellow-200 dark:border-yellow-800">
+                      {(() => {
+                        const mt = selectedSawah.musimTanam;
+                        const name = mt.reporter_name ||
+                          (mt.reporter_email ? mt.reporter_email.split('@')[0] : 'Anonim');
+                        return (
+                          <div className="flex items-center gap-1.5">
+                            <div className="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[8px] font-bold">
+                              {name.charAt(0).toUpperCase()}
+                            </div>
+                            <span className="text-[10px] text-gray-500 dark:text-gray-400">Diinput oleh</span>
+                            <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                              @{name}
+                            </span>
+                            {mt.reporter_role && (
+                              <span className="text-[8px] bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5 rounded-full uppercase font-medium">
+                                {mt.reporter_role}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
                 </div>
+                <button
+                  onClick={() => setSelectedSawah(null)}
+                  className="w-6 h-6 rounded-full hover:bg-yellow-200 dark:hover:bg-yellow-700/40 flex items-center justify-center text-yellow-500 dark:text-yellow-400 transition-colors shrink-0"
+                >
+                  <i className="fa-solid fa-xmark"></i>
+                </button>
               </div>
-            )}
+            </div>
+          )}
 
             {/* SALURAN */}
             {selectedSaluran && (
@@ -2358,6 +2468,26 @@ if (showWind && envData?.windSpeed) {
               </div>
             )}
 
+            
+        {/* 🔥 PANEL MUSIM TANAM — HANYA JURU */}
+          {normalizeRole(session?.user?.role) === 'juru' && (
+            <button
+              onClick={() => setShowMusimTanam(true)}
+              className={`w-10 h-10 rounded-full shadow-lg border flex items-center justify-center transition ${
+                showMusimTanam
+                  ? 'bg-emerald-500 text-white border-emerald-500'
+                  : 'bg-white dark:bg-[#1a1a2e] border-gray-200 dark:border-[#2a2a4e] text-emerald-600 dark:text-emerald-400 hover:bg-gray-100 dark:hover:bg-[#2a2a4e]'
+              }`}
+              title={
+                isJuruBengkok
+                  ? 'Input Musim Tanam (Bengkok — #SaluranIndukCibarusah)'
+                  : 'Input Musim Tanam (Juru)'
+              }
+            >
+              <i className="fa-solid fa-seedling"></i>
+            </button>
+          )}
+
             {/* WEATHER */}
             <div className="bg-gradient-to-br from-blue-50/50 to-cyan-50/50 dark:from-blue-900/20 dark:to-cyan-900/20 rounded-xl border border-blue-200 dark:border-blue-800 p-4">
               <div className="flex items-center justify-between mb-2">
@@ -2382,7 +2512,9 @@ if (showWind && envData?.windSpeed) {
             </div>
           </div>
         </div>
+            
 
+            
         {/* TOGGLE PANEL BUTTON */}
         <button
           onClick={() => setIsPanelOpen(!isPanelOpen)}

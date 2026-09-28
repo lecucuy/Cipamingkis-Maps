@@ -8,6 +8,8 @@ import {
   useMusimTanam,
 } from '@/hooks/useMusimTanam';
 
+
+
 interface Polygon {
   name: string;
   area_ha?: number;
@@ -18,7 +20,10 @@ interface MusimTanamPanelProps {
   polygons: Polygon[];
   userRole?: string;
   onClose?: () => void;
+  onSuccess?: () => void;   // 🔥 BARU
 }
+
+
 
 const ALLOWED_ROLES = ['juru', 'supervisor', 'admin'];
 
@@ -26,12 +31,13 @@ export default function MusimTanamPanel({
   polygons,
   userRole,
   onClose,
+  onSuccess,                 // 🔥 BARU
 }: MusimTanamPanelProps) {
   const { reports, reportByPolygon, periodeInfo, compare, loading, submitting, submit } =
     useMusimTanam();
 
   const allowed = ALLOWED_ROLES.includes((userRole || '').toLowerCase());
-
+  
   // State input per polygon
   type DraftRow = { status: MusimTanamStatus; keterangan: string };
   const [draft, setDraft] = useState<Record<string, DraftRow>>({});
@@ -39,9 +45,10 @@ export default function MusimTanamPanel({
   // Load existing periode ini ke draft
   useEffect(() => {
     const next: Record<string, DraftRow> = {};
-    polygons.forEach((p) => {
+    polygons.forEach((p, idx) => {
+      const rowKey = `${p.name}__${idx}`;
       const existing = reportByPolygon[p.name];
-      next[p.name] = {
+      next[rowKey] = {
         status: existing?.status || 'tidak_ada',
         keterangan: existing?.keterangan || '',
       };
@@ -56,25 +63,33 @@ export default function MusimTanamPanel({
     }));
   };
 
-  const handleSubmit = async () => {
-    if (!allowed) {
-      toast.error('Hanya Juru / Supervisor yang bisa input musim tanam.');
-      return;
-    }
-    const items = polygons.map((p) => ({
+const handleSubmit = async () => {
+  if (!allowed) {
+    toast.error('Hanya Juru / Supervisor yang bisa input musim tanam.');
+    return;
+  }
+  if (submitting) return;
+
+  const items = polygons.map((p, idx) => {
+    const rowKey = `${p.name}__${idx}`;
+    return {
       polygon_id: p.name,
       polygon_name: p.name,
-      status: draft[p.name]?.status || 'tidak_ada',
+      status: draft[rowKey]?.status || 'tidak_ada',
       luas_ha: p.area_ha || 0,
-      keterangan: draft[p.name]?.keterangan || '',
-    }));
-    try {
-      const res = await submit(items);
-      toast.success(res.message || 'Musim tanam tersimpan');
-    } catch (e: any) {
-      toast.error(e.response?.data?.detail || e.message || 'Gagal menyimpan');
-    }
-  };
+      keterangan: draft[rowKey]?.keterangan || '',
+    };
+  });
+
+  try {
+    const res = await submit(items);
+    toast.success(res.message || 'Musim tanam tersimpan');
+    onSuccess?.();           // 🔥 Trigger refresh di parent
+  } catch (e: any) {
+    toast.error(e.response?.data?.detail || e.message || 'Gagal menyimpan');
+  }
+};
+
 
   // Summary periode ini (dari draft, live)
   const summaryCurrent = useMemo(() => {
@@ -85,8 +100,9 @@ export default function MusimTanamPanel({
       panen: { luas: 0, count: 0 },
       tidak_ada: { luas: 0, count: 0 },
     };
-    polygons.forEach((p) => {
-      const s = draft[p.name]?.status || 'tidak_ada';
+    polygons.forEach((p, idx) => {
+      const rowKey = `${p.name}__${idx}`;
+      const s = draft[rowKey]?.status || 'tidak_ada';
       map[s].luas += p.area_ha || 0;
       map[s].count += 1;
     });
@@ -201,8 +217,9 @@ export default function MusimTanamPanel({
               Belum ada polygon luasan sawah
             </div>
           ) : (
-            polygons.map((poly) => {
-              const row = draft[poly.name] || {
+            polygons.map((poly, idx) => {
+              const rowKey = `${poly.name}__${idx}`;
+              const row = draft[rowKey] || {
                 status: 'tidak_ada' as MusimTanamStatus,
                 keterangan: '',
               };
@@ -239,9 +256,7 @@ export default function MusimTanamPanel({
                       disabled={!allowed}
                       value={row.status}
                       onChange={(e) =>
-                        updateDraft(poly.name, {
-                          status: e.target.value as MusimTanamStatus,
-                        })
+                    updateDraft(rowKey, { status: e.target.value as MusimTanamStatus })
                       }
                       className="px-2 py-1.5 text-xs rounded-md border border-gray-300 dark:border-[#2a2a4e] bg-white dark:bg-[#0f0f23] text-[#1a1a2e] dark:text-white focus:outline-none focus:border-emerald-500"
                     >
@@ -256,9 +271,7 @@ export default function MusimTanamPanel({
                       type="text"
                       disabled={!allowed}
                       value={row.keterangan}
-                      onChange={(e) =>
-                        updateDraft(poly.name, { keterangan: e.target.value })
-                      }
+                      onChange={(e) => updateDraft(rowKey, { keterangan: e.target.value })}
                       placeholder="Keterangan (opsional)"
                       className="px-2 py-1.5 text-xs rounded-md border border-gray-300 dark:border-[#2a2a4e] bg-white dark:bg-[#0f0f23] text-[#1a1a2e] dark:text-white focus:outline-none focus:border-emerald-500"
                     />
@@ -278,7 +291,7 @@ export default function MusimTanamPanel({
             <button
               onClick={handleSubmit}
               disabled={submitting || polygons.length === 0}
-              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium transition shadow-lg shadow-emerald-500/20 disabled:opacity-50 flex items-center gap-2"
+              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white text-xs font-medium transition shadow-lg shadow-emerald-500/20 flex items-center gap-2"
             >
               {submitting ? (
                 <>

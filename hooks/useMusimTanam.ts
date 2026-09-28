@@ -1,8 +1,8 @@
 // hooks/useMusimTanam.ts
 'use client';
-import { useCallback, useEffect, useState,useMemo } from 'react';
+import { useCallback, useEffect, useState, useMemo } from 'react';
 import axios from 'axios';
-import { useSession } from 'next-auth/react';
+import { useSession, signOut } from 'next-auth/react';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
@@ -37,6 +37,8 @@ export interface PeriodeInfo {
   label: string;
 }
 
+const COOLDOWN_MS = 60_000; // 60 detik
+
 export function useMusimTanam() {
   const { data: session } = useSession();
   const [reports, setReports] = useState<MusimTanamReport[]>([]);
@@ -44,49 +46,54 @@ export function useMusimTanam() {
   const [compare, setCompare] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [lastSubmittedAt, setLastSubmittedAt] = useState<number>(0);
 
   const token = session?.accessToken;
-  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const headers = useMemo(
+    () => (token ? { Authorization: `Bearer ${token}` } : {}),
+    [token]
+  );
 
-  const refresh = useCallback(async () => {
-    if (!token) return;
-    setLoading(true);
-    try {
-      const [infoRes, reportRes, compareRes] = await Promise.all([
-        axios.get(`${API_URL}/musim-tanam/periode-info`, { headers }),
-        axios.get(`${API_URL}/musim-tanam/laporan`, { headers }),
-        axios.get(`${API_URL}/musim-tanam/compare`, { headers }),
-      ]);
-      setPeriodeInfo({
-        current: infoRes.data.current,
-        previous: infoRes.data.previous,
-      });
-      setReports(reportRes.data.reports || []);
-      setCompare(compareRes.data);
-    } catch (err) {
-      console.error('[useMusimTanam] fetch error', err);
-    } finally {
-      setLoading(false);
+  // ===== FETCH =====
+const refresh = useCallback(async () => {
+  if (!token) {
+    console.warn('[useMusimTanam] No token, skip fetch');
+    return;
+  }
+  setLoading(true);
+  try {
+    const [infoRes, reportRes, compareRes] = await Promise.all([
+      axios.get(`${API_URL}/musim-tanam/periode-info`, { headers }),
+      axios.get(`${API_URL}/musim-tanam/laporan`, { headers }),
+      axios.get(`${API_URL}/musim-tanam/compare`, { headers }),
+    ]);
+    console.log('[useMusimTanam] Fetched OK:', {
+      reports: reportRes.data.reports?.length,
+      periode: infoRes.data.current?.key,
+    });
+    setPeriodeInfo({
+      current: infoRes.data.current,
+      previous: infoRes.data.previous,
+    });
+    setReports(reportRes.data.reports || []);
+    setCompare(compareRes.data);
+  } catch (err: any) {
+    console.error('[useMusimTanam] fetch error:', err.response?.status, err.message);
+    // 🔥 401 → paksa sign out
+    if (err.response?.status === 401) {
+      console.warn('[useMusimTanam] 401 — token expired, sign out');
+      await signOut({ callbackUrl: '/login' });
+      return;
     }
-  }, [token]);
+  } finally {
+    setLoading(false);
+  }
+}, [token, headers]);
 
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
 
-  const submit = useCallback(async (items: Array<{ polygon_id: string; polygon_name: string; status: MusimTanamStatus; luas_ha: number; keterangan: string }>) => {
-    if (!token) throw new Error('Belum login');
-    setSubmitting(true);
-    try {
-      const res = await axios.post(`${API_URL}/musim-tanam/submit`, { items }, { headers });
-      await refresh();
-      return res.data;
-    } finally {
-      setSubmitting(false);
-    }
-  }, [token, refresh, headers]);
 
-    const reportByPolygon = useMemo(() => {
+  // ===== MAP BY POLYGON =====
+  const reportByPolygon = useMemo(() => {
     const map: Record<string, MusimTanamReport> = {};
     reports.forEach((r) => {
       map[r.polygon_id] = r;
@@ -94,5 +101,54 @@ export function useMusimTanam() {
     return map;
   }, [reports]);
 
-  return { reports,reportByPolygon, periodeInfo, compare, loading, submitting, submit, refresh };
+  // ===== SUBMIT =====
+  const submit = useCallback(
+    async (items: Array<{
+      polygon_id: string;
+      polygon_name: string;
+      status: MusimTanamStatus;
+      luas_ha: number;
+      keterangan: string;
+    }>) => {
+      if (!token) throw new Error('Belum login');
+
+      if (submitting) {
+        console.warn('[useMusimTanam] submit diabaikan — masih submitting');
+        throw new Error('Sedang menyimpan, tunggu sebentar…');
+      }
+
+      // 🔥 Cooldown 60 detik
+      const elapsed = Date.now() - lastSubmittedAt;
+      if (lastSubmittedAt > 0 && elapsed < COOLDOWN_MS) {
+        const sisa = Math.ceil((COOLDOWN_MS - elapsed) / 1000);
+        throw new Error(`Tunggu ${sisa} detik sebelum submit lagi.`);
+      }
+
+      setSubmitting(true);
+      try {
+        const res = await axios.post(
+          `${API_URL}/musim-tanam/submit`,
+          { items },
+          { headers }
+        );
+        setLastSubmittedAt(Date.now());
+        await refresh();
+        return res.data;
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [token, refresh, headers, submitting, lastSubmittedAt]
+  );
+
+  return {
+    reports,
+    reportByPolygon,
+    periodeInfo,
+    compare,
+    loading,
+    submitting,
+    submit,
+    refresh,
+  };
 }

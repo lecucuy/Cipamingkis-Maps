@@ -20,6 +20,11 @@ interface MediaItem {
   description: string;
   timestamp: string;
   created_at: string;
+  // ===== BARU: dari enrich_media_with_user =====
+  user_name?: string | null;
+  user_full_name?: string | null;
+  user_role?: string | null;
+  user_exists?: boolean;    // 🔥 BARU
 }
 
 interface BuildingMediaProps {
@@ -122,6 +127,27 @@ export default function BuildingMedia({
   // ====== CURRENT USER ======
   const currentUserId = getUserIdFromToken(session?.accessToken);
 
+
+    // ===== UPLOADER LABEL =====
+    const getUploaderLabel = useCallback(
+      (item: MediaItem): { name: string; isMe: boolean; role?: string | null; deleted: boolean } => {
+        const isMe = !!currentUserId && String(item.user_id) === String(currentUserId);
+
+        if (item.user_exists === false && !isMe) {
+          return { name: 'User Terhapus', isMe: false, role: null, deleted: true };
+        }
+
+        const rawName =
+          item.user_name ||
+          item.user_full_name ||
+          (isMe ? (session?.user as any)?.name : null) ||
+          (isMe ? (session?.user as any)?.email?.split('@')[0] : null) ||
+          'Anonim';
+
+        return { name: rawName, isMe, role: item.user_role, deleted: false };
+      },
+      [currentUserId, session]
+    );
   // ============ COMPUTED PERMISSION ============
   const roleNorm = (userRole || '').toLowerCase();
   const isPolygonRole = ['tpop', 'pob', 'juru', 'supervisor'].includes(roleNorm);
@@ -751,10 +777,51 @@ export default function BuildingMedia({
                       )}
                   </div>
 
-                  <div className="p-3 space-y-1.5">
-                    <p className="text-sm font-medium text-gray-800 dark:text-white line-clamp-2">
-                      {item.description || 'Tanpa deskripsi'}
-                    </p>
+                    <div className="p-3 space-y-1.5">
+                      {/* ===== UPLOADER ===== */}
+                     {(() => {
+                        const { name, isMe, role, deleted } = getUploaderLabel(item);
+                        return (
+                          <div className="flex items-center gap-1.5 text-[11px]">
+                            <div
+                              className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold ${
+                                deleted
+                                  ? 'bg-gray-200 dark:bg-gray-700 text-gray-400'
+                                  : isMe
+                                  ? 'bg-[#00c8ff] text-white'
+                                  : 'bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200'
+                              }`}
+                            >
+                              {deleted ? '?' : name.charAt(0).toUpperCase()}
+                            </div>
+                            <span
+                              className={`font-semibold ${
+                                deleted
+                                  ? 'text-gray-400 dark:text-gray-500 italic'
+                                  : isMe
+                                  ? 'text-[#00c8ff]'
+                                  : 'text-gray-700 dark:text-gray-200'
+                              }`}
+                            >
+                              {deleted ? name : `@${name}`}
+                            </span>
+                            {isMe && !deleted && (
+                              <span className="text-[9px] bg-[#00c8ff]/10 text-[#00c8ff] px-1.5 py-0.5 rounded-full font-medium">
+                                Anda
+                              </span>
+                            )}
+                            {role && !isMe && !deleted && (
+                              <span className="text-[9px] bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 px-1.5 py-0.5 rounded-full uppercase">
+                                {role}
+                              </span>
+                            )}
+                          </div>
+                        );
+})()}
+
+                      <p className="text-sm font-medium text-gray-800 dark:text-white line-clamp-2">
+                        {item.description || 'Tanpa deskripsi'}
+                      </p>
                     <div className="flex items-center gap-3 text-[10px] text-gray-500 dark:text-gray-400">
                       <span className="flex items-center gap-1">
                         <i className="fa-regular fa-calendar"></i>
