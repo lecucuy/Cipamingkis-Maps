@@ -111,17 +111,10 @@ export default function BuildingMedia({
   const [uploadIndex, setUploadIndex] = useState(0);
   const [totalProgress, setTotalProgress] = useState(0);
   const [selectedModelUrl, setSelectedModelUrl] = useState<string | null>(null);
-  const [lightbox, setLightbox] = useState<{
-    items: MediaItem[];
-    index: number;
-  } | null>(null);
+
   const [likeCounts, setLikeCounts] = useState<Record<string, { count: number; liked: boolean }>>({});
   const [shareCounts, setShareCounts] = useState<Record<string, number>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
-    const lightboxRef = useRef<HTMLDivElement>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [showControls, setShowControls] = useState(true);
-  const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ====== STATE EDIT ======
   const [editingMedia, setEditingMedia] = useState<MediaItem | null>(null);
@@ -134,49 +127,6 @@ export default function BuildingMedia({
   const currentUserId = getUserIdFromToken(session?.accessToken);
   const [slideIndexes, setSlideIndexes] = useState<Record<string, number>>({});
 
-
-    const toggleFullscreen = async () => {
-    try {
-      const el = lightboxRef.current;
-      if (!el) return;
-      if (!document.fullscreenElement) {
-        await el.requestFullscreen?.();
-      } else {
-        await document.exitFullscreen?.();
-      }
-    } catch (e) {
-      console.warn('Fullscreen gagal:', e);
-    }
-  };
-
-  // Sinkron status fullscreen (kalau user keluar via Esc browser)
-  useEffect(() => {
-    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
-    document.addEventListener('fullscreenchange', onFsChange);
-    return () => document.removeEventListener('fullscreenchange', onFsChange);
-  }, []);
-
-  // Auto-hide controls setelah 3 detik idle
-  const pokeControls = useCallback(() => {
-    setShowControls(true);
-    if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
-    controlsTimerRef.current = setTimeout(() => setShowControls(false), 3000);
-  }, []);
-
-  useEffect(() => {
-    if (!lightbox) return;
-    pokeControls();
-    return () => {
-      if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
-    };
-  }, [lightbox, pokeControls]);
-
-  // Kalau keluar fullscreen / tutup lightbox → exit fullscreen
-  useEffect(() => {
-    if (!lightbox && document.fullscreenElement) {
-      document.exitFullscreen?.().catch(() => {});
-    }
-  }, [lightbox]);
 
     // ===== UPLOADER LABEL =====
     const getUploaderLabel = useCallback(
@@ -645,6 +595,20 @@ const grouped = useMemo(() => {
     }
   };
 
+    // ============ FULLSCREEN HANDLER ============
+  const handleMediaClick = async (e: React.MouseEvent) => {
+    const el = e.currentTarget as HTMLElement;
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen?.();
+      } else {
+        await el.requestFullscreen?.();
+      }
+    } catch (err) {
+      console.warn('Fullscreen gagal:', err);
+    }
+  };
+
   useEffect(() => {
     if (activeTab === 'model_3d') {
       const models = media.filter(m => m.media_type === 'model_3d');
@@ -719,40 +683,6 @@ const grouped = useMemo(() => {
     }
   };
 
-    // ============ LIGHTBOX HELPERS ============
-  const openLightbox = (items: MediaItem[], index: number) => {
-    if (!items.length) return;
-    const safe = Math.max(0, Math.min(index, items.length - 1));
-    setLightbox({ items, index: safe });
-  };
-  const closeLightbox = () => setLightbox(null);
-  const lightboxPrev = () =>
-    setLightbox((prev) =>
-      prev ? { ...prev, index: (prev.index - 1 + prev.items.length) % prev.items.length } : null
-    );
-  const lightboxNext = () =>
-    setLightbox((prev) =>
-      prev ? { ...prev, index: (prev.index + 1) % prev.items.length } : null
-    );
-
-  useEffect(() => {
-    if (!lightbox) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (document.fullscreenElement) document.exitFullscreen?.();
-        else closeLightbox();
-      } else if (e.key === 'ArrowLeft') lightboxPrev();
-      else if (e.key === 'ArrowRight') lightboxNext();
-      else if (e.key === 'f' || e.key === 'F') toggleFullscreen();
-    };
-    window.addEventListener('keydown', onKey);
-    const orig = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      document.body.style.overflow = orig;
-    };
-  }, [lightbox]);
 
   // ============ EARLY RETURN ============
   if (!buildingId) return null;
@@ -872,7 +802,7 @@ const grouped = useMemo(() => {
                         src={item.file_url}
                         alt={item.description || 'Media'}
                         className="w-full max-h-[500px] object-contain cursor-pointer bg-gray-50 dark:bg-gray-900 transition-transform duration-300 group-hover:scale-[1.01]"
-                     onClick={() => openLightbox(group.items, slideIdx)}
+                        onClick={handleMediaClick}
                         loading="lazy"
                       />
                     )}
@@ -882,178 +812,12 @@ const grouped = useMemo(() => {
                         className="w-full max-h-[500px] object-contain rounded-t-2xl cursor-pointer bg-black"
                         controls
                         playsInline
-                       onClick={(e) => {
+                        onClick={(e) => {
                           e.stopPropagation();
-                          openLightbox(group.items, slideIdx);
+                          handleMediaClick(e);
                         }}
                       />
                     )}
-
-
-                            {/* ============ LIGHTBOX FULLSCREEN + SLIDER ============ */}
-      {/* ============ LIGHTBOX FULLSCREEN + SLIDER ============ */}
-      {lightbox && (() => {
-        const cur = lightbox.items[lightbox.index];
-        if (!cur) return null;
-        const isVid = cur.file_type === 'videos' || cur.file_type === 'video';
-        const isImg = cur.file_type === 'images' || cur.file_type === 'image';
-        const hasMultiple = lightbox.items.length > 1;
-
-        let touchStartX = 0;
-        const onTouchStart = (e: React.TouchEvent) => {
-          touchStartX = e.touches[0].clientX;
-          pokeControls();
-        };
-        const onTouchEnd = (e: React.TouchEvent) => {
-          const dx = e.changedTouches[0].clientX - touchStartX;
-          if (Math.abs(dx) < 50) return;
-          if (dx < 0) lightboxNext();
-          else lightboxPrev();
-          pokeControls();
-        };
-
-        const ctrlCls = `transition-opacity duration-300 ${
-          showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
-        }`;
-
-        return (
-          <div
-            ref={lightboxRef}
-            className="fixed inset-0 z-[100] bg-black flex flex-col select-none"
-            onClick={() => {
-              // klik background = tutup (tapi hanya kalau bukan fullscreen supaya tidak annoying)
-              if (!isFullscreen) closeLightbox();
-            }}
-            onMouseMove={pokeControls}
-            onTouchStart={pokeControls}
-          >
-            {/* ===== HEADER ===== */}
-            <div
-              className={`flex items-center justify-between px-4 py-3 text-white shrink-0 bg-gradient-to-b from-black/80 to-transparent absolute top-0 left-0 right-0 z-30 ${ctrlCls}`}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="text-xs opacity-80 tabular-nums bg-white/10 px-3 py-1 rounded-full backdrop-blur-sm">
-                {lightbox.index + 1} / {lightbox.items.length}
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={toggleFullscreen}
-                  className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/25 flex items-center justify-center transition backdrop-blur-sm"
-                  title={isFullscreen ? 'Keluar fullscreen (F)' : 'Fullscreen (F)'}
-                >
-                  <i className={`fa-solid ${isFullscreen ? 'fa-compress' : 'fa-expand'}`}></i>
-                </button>
-                <button
-                  type="button"
-                  onClick={closeLightbox}
-                  className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/25 flex items-center justify-center transition backdrop-blur-sm"
-                  title="Tutup (Esc)"
-                >
-                  <i className="fa-solid fa-xmark"></i>
-                </button>
-              </div>
-            </div>
-
-            {/* ===== CONTENT ===== */}
-            <div
-              className="relative flex-1 flex items-center justify-center overflow-hidden"
-              onClick={(e) => e.stopPropagation()}
-              onTouchStart={onTouchStart}
-              onTouchEnd={onTouchEnd}
-              onDoubleClick={toggleFullscreen}
-            >
-              {hasMultiple && (
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); lightboxPrev(); pokeControls(); }}
-                  className={`absolute left-3 top-1/2 -translate-y-1/2 z-20 w-12 h-12 rounded-full bg-black/50 hover:bg-black/80 text-white flex items-center justify-center backdrop-blur-sm ${ctrlCls}`}
-                  title="Sebelumnya (←)"
-                >
-                  <i className="fa-solid fa-chevron-left text-lg"></i>
-                </button>
-              )}
-
-              {isImg && (
-                <img
-                  src={cur.file_url}
-                  alt={cur.description || 'Media'}
-                  className="max-h-full max-w-full object-contain animate-[fadeIn_0.25s_ease]"
-                  draggable={false}
-                  onDoubleClick={(e) => { e.stopPropagation(); toggleFullscreen(); }}
-                />
-              )}
-              {isVid && (
-                <video
-                  key={cur._id}
-                  src={cur.file_url}
-                  controls
-                  autoPlay
-                  playsInline
-                  className="max-h-full max-w-full"
-                />
-              )}
-              {!isImg && !isVid && (
-                <div className="text-white/80 text-sm text-center">
-                  <i className="fa-solid fa-file text-5xl block mb-3"></i>
-                  Dokumen tidak dapat dipreview
-                  <div className="mt-4">
-                    <a
-                      href={cur.file_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="px-4 py-2 bg-[#00c8ff] rounded-full text-white text-xs font-medium"
-                    >
-                      Buka di tab baru
-                    </a>
-                  </div>
-                </div>
-              )}
-
-              {hasMultiple && (
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); lightboxNext(); pokeControls(); }}
-                  className={`absolute right-3 top-1/2 -translate-y-1/2 z-20 w-12 h-12 rounded-full bg-black/50 hover:bg-black/80 text-white flex items-center justify-center backdrop-blur-sm ${ctrlCls}`}
-                  title="Berikutnya (→)"
-                >
-                  <i className="fa-solid fa-chevron-right text-lg"></i>
-                </button>
-              )}
-            </div>
-
-            {/* ===== FOOTER: dots + caption ===== */}
-            <div
-              className={`shrink-0 pb-5 pt-2 px-4 text-center text-white/90 bg-gradient-to-t from-black/90 via-black/60 to-transparent absolute bottom-0 left-0 right-0 z-30 ${ctrlCls}`}
-              onClick={(e) => e.stopPropagation()}
-            >
-              {hasMultiple && (
-                <div className="flex justify-center gap-1.5 flex-wrap mb-2">
-                  {lightbox.items.map((_, i) => (
-                    <button
-                      key={i}
-                      type="button"
-                      onClick={() => {
-                        setLightbox((prev) => (prev ? { ...prev, index: i } : null));
-                        pokeControls();
-                      }}
-                      className={`h-1.5 rounded-full transition-all ${
-                        i === lightbox.index ? 'bg-white w-6' : 'bg-white/40 w-1.5 hover:bg-white/70'
-                      }`}
-                    />
-                  ))}
-                </div>
-              )}
-              <p className="text-sm font-medium line-clamp-2">
-                {cur.description || 'Tanpa deskripsi'}
-              </p>
-              <p className="text-[11px] text-white/50 mt-1">
-                {formatDateID(cur.timestamp || cur.created_at, true)}
-              </p>
-            </div>
-          </div>
-        );
-      })()}
                     {isDocument && (
                       <div className="w-full h-48 flex flex-col items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-400 cursor-pointer" onClick={() => window.open(item.file_url, '_blank')}>
                         <i className="fa-solid fa-file-pdf text-5xl mb-2"></i>
@@ -1068,127 +832,127 @@ const grouped = useMemo(() => {
                       {item.media_type === 'maintenance' && '🔧 Perbaikan'}
                     </div>
 
-                    <div className="absolute bottom-3 right-3 z-10 bg-black/40 ...">
+                    <div className="absolute bottom-3 right-3 z-10 bg-black/40 backdrop-blur-sm text-white text-[10px] px-2.5 py-1 rounded-full">
                       {isAlbum
                         ? `${slideIdx + 1} / ${group.items.length}`
                         : `${groupIndex + 1} / ${grouped.length}`}
                     </div>
 
-                         {/* ===== SLIDER CONTROLS (khusus album) ===== */}
-                        {isAlbum && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={goPrev}
-                              className="absolute left-2 top-1/2 -translate-y-1/2 z-20 w-9 h-9 rounded-full bg-black/50 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/70 transition shadow-lg"
-                              title="Sebelumnya"
-                            >
-                              <i className="fa-solid fa-chevron-left text-xs"></i>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={goNext}
-                              className="absolute right-2 top-1/2 -translate-y-1/2 z-20 w-9 h-9 rounded-full bg-black/50 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/70 transition shadow-lg"
-                              title="Berikutnya"
-                            >
-                              <i className="fa-solid fa-chevron-right text-xs"></i>
-                            </button>
+                    {/* ===== SLIDER CONTROLS (khusus album) ===== */}
+                    {isAlbum && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={goPrev}
+                          className="absolute left-2 top-1/2 -translate-y-1/2 z-20 w-9 h-9 rounded-full bg-black/50 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/70 transition shadow-lg"
+                          title="Sebelumnya"
+                        >
+                          <i className="fa-solid fa-chevron-left text-xs"></i>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={goNext}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 z-20 w-9 h-9 rounded-full bg-black/50 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/70 transition shadow-lg"
+                          title="Berikutnya"
+                        >
+                          <i className="fa-solid fa-chevron-right text-xs"></i>
+                        </button>
 
-                            {/* Dots indicator */}
-                            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex gap-1.5 bg-black/40 backdrop-blur-sm px-2 py-1 rounded-full">
-                              {group.items.map((_, i) => (
-                                <button
-                                  key={i}
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSlideIndexes(prev => ({ ...prev, [group.key]: i }));
-                                  }}
-                                  className={`h-1.5 rounded-full transition-all ${
-                                    i === slideIdx ? 'bg-white w-4' : 'bg-white/50 w-1.5'
-                                  }`}
-                                />
-                              ))}
-                            </div>
-                          </>
-                        )}
-
-                      {canModifyMedia(item) && (
-                        <div className="absolute top-3 right-3 z-10 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button
-                            type="button"
-                            onClick={() => openEditModal(item)}
-                            className="w-8 h-8 rounded-full bg-blue-500/85 text-white flex items-center justify-center hover:bg-blue-600 shadow-lg"
-                            title="Edit"
-                          >
-                            <i className="fa-solid fa-pen text-xs"></i>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDelete(item._id)}  
-                            className="w-8 h-8 rounded-full bg-red-500/85 text-white flex items-center justify-center hover:bg-red-600 shadow-lg"
-                            title="Hapus"
-                          >
-                            <i className="fa-solid fa-trash text-xs"></i>
-                          </button>
+                        {/* Dots indicator */}
+                        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex gap-1.5 bg-black/40 backdrop-blur-sm px-2 py-1 rounded-full">
+                          {group.items.map((_, i) => (
+                            <button
+                              key={i}
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSlideIndexes(prev => ({ ...prev, [group.key]: i }));
+                              }}
+                              className={`h-1.5 rounded-full transition-all ${
+                                i === slideIdx ? 'bg-white w-4' : 'bg-white/50 w-1.5'
+                              }`}
+                            />
+                          ))}
                         </div>
-                      )}
+                      </>
+                    )}
+
+                    {canModifyMedia(item) && (
+                      <div className="absolute top-3 right-3 z-10 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(item)}
+                          className="w-8 h-8 rounded-full bg-blue-500/85 text-white flex items-center justify-center hover:bg-blue-600 shadow-lg"
+                          title="Edit"
+                        >
+                          <i className="fa-solid fa-pen text-xs"></i>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(item._id)}
+                          className="w-8 h-8 rounded-full bg-red-500/85 text-white flex items-center justify-center hover:bg-red-600 shadow-lg"
+                          title="Hapus"
+                        >
+                          <i className="fa-solid fa-trash text-xs"></i>
+                        </button>
+                      </div>
+                    )}
                   </div>
 
-                    <div className="p-3 space-y-1.5">
-                      {/* ===== UPLOADER ===== */}
-                     {(() => {
-                        const { name, isMe, role, deleted } = getUploaderLabel(item);
-                        return (
-                          <div className="flex items-center gap-1.5 text-[11px]">
-                            <div
-                              className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold ${
-                                deleted
-                                  ? 'bg-gray-200 dark:bg-gray-700 text-gray-400'
-                                  : isMe
-                                  ? 'bg-[#00c8ff] text-white'
-                                  : 'bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200'
-                              }`}
-                            >
-                              {deleted ? '?' : name.charAt(0).toUpperCase()}
-                            </div>
-                            <span
-                              className={`font-semibold ${
-                                deleted
-                                  ? 'text-gray-400 dark:text-gray-500 italic'
-                                  : isMe
-                                  ? 'text-[#00c8ff]'
-                                  : 'text-gray-700 dark:text-gray-200'
-                              }`}
-                            >
-                              {deleted ? name : `@${name}`}
-                            </span>
-                            {isMe && !deleted && (
-                              <span className="text-[9px] bg-[#00c8ff]/10 text-[#00c8ff] px-1.5 py-0.5 rounded-full font-medium">
-                                Anda
-                              </span>
-                            )}
-                            {role && !isMe && !deleted && (
-                              <span className="text-[9px] bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 px-1.5 py-0.5 rounded-full uppercase">
-                                {role}
-                              </span>
-                            )}
+                  <div className="p-3 space-y-1.5">
+                    {/* ===== UPLOADER ===== */}
+                    {(() => {
+                      const { name, isMe, role, deleted } = getUploaderLabel(item);
+                      return (
+                        <div className="flex items-center gap-1.5 text-[11px]">
+                          <div
+                            className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold ${
+                              deleted
+                                ? 'bg-gray-200 dark:bg-gray-700 text-gray-400'
+                                : isMe
+                                ? 'bg-[#00c8ff] text-white'
+                                : 'bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200'
+                            }`}
+                          >
+                            {deleted ? '?' : name.charAt(0).toUpperCase()}
                           </div>
-                        );
-})()}
+                          <span
+                            className={`font-semibold ${
+                              deleted
+                                ? 'text-gray-400 dark:text-gray-500 italic'
+                                : isMe
+                                ? 'text-[#00c8ff]'
+                                : 'text-gray-700 dark:text-gray-200'
+                            }`}
+                          >
+                            {deleted ? name : `@${name}`}
+                          </span>
+                          {isMe && !deleted && (
+                            <span className="text-[9px] bg-[#00c8ff]/10 text-[#00c8ff] px-1.5 py-0.5 rounded-full font-medium">
+                              Anda
+                            </span>
+                          )}
+                          {role && !isMe && !deleted && (
+                            <span className="text-[9px] bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 px-1.5 py-0.5 rounded-full uppercase">
+                              {role}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
 
-                      <p className="text-sm font-medium text-gray-800 dark:text-white line-clamp-2">
-                        {item.description || 'Tanpa deskripsi'}
-                      </p>
+                    <p className="text-sm font-medium text-gray-800 dark:text-white line-clamp-2">
+                      {item.description || 'Tanpa deskripsi'}
+                    </p>
                     <div className="flex items-center gap-3 text-[10px] text-gray-500 dark:text-gray-400">
                       <span className="flex items-center gap-1">
                         <i className="fa-regular fa-calendar"></i>
-                          {formatDateID(item.timestamp || item.created_at, true)}
+                        {formatDateID(item.timestamp || item.created_at, true)}
                       </span>
                       <span className="w-1 h-1 rounded-full bg-gray-300 dark:bg-gray-600"></span>
                       <span className="flex items-center gap-1">
                         <i className="fa-regular fa-clock"></i>
-                          {formatDateID(item.created_at || item.timestamp, false)}
+                        {formatDateID(item.created_at || item.timestamp, false)}
                       </span>
                     </div>
 
@@ -1422,105 +1186,106 @@ const grouped = useMemo(() => {
       )}
 
       {editingMedia && (
+        <div
+          className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+          onClick={() => !saving && setEditingMedia(null)}
+        >
           <div
-            className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
-            onClick={() => !saving && setEditingMedia(null)}
+            className="bg-white dark:bg-[#1a1a2e] rounded-2xl shadow-2xl w-full max-w-md p-5 space-y-4"
+            onClick={(e) => e.stopPropagation()}
           >
-            <div
-              className="bg-white dark:bg-[#1a1a2e] rounded-2xl shadow-2xl w-full max-w-md p-5 space-y-4"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-gray-800 dark:text-white flex items-center gap-2">
-                  <i className="fa-solid fa-pen text-[#00c8ff]"></i>
-                  Edit Media
-                </h3>
-                <button
-                  type="button"
-                  onClick={() => !saving && setEditingMedia(null)}
-                  className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-                >
-                  <i className="fa-solid fa-xmark"></i>
-                </button>
-              </div>
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-gray-800 dark:text-white flex items-center gap-2">
+                <i className="fa-solid fa-pen text-[#00c8ff]"></i>
+                Edit Media
+              </h3>
+              <button
+                type="button"
+                onClick={() => !saving && setEditingMedia(null)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
 
-              {/* Preview thumbnail */}
-              <div className="rounded-lg overflow-hidden bg-black/5 dark:bg-black/20 max-h-40 flex items-center justify-center">
-                {editingMedia.file_type === 'videos' ? (
-                  <video src={editingMedia.file_url} className="max-h-40" muted />
-                ) : editingMedia.file_type === 'images' ? (
-                  <img src={editingMedia.file_url} className="max-h-40 object-contain" alt="preview" />
-                ) : (
-                  <i className="fa-solid fa-file text-4xl text-gray-400 py-10"></i>
-                )}
-              </div>
+            {/* Preview thumbnail */}
+            <div className="rounded-lg overflow-hidden bg-black/5 dark:bg-black/20 max-h-40 flex items-center justify-center">
+              {editingMedia.file_type === 'videos' ? (
+                <video src={editingMedia.file_url} className="max-h-40" muted />
+              ) : editingMedia.file_type === 'images' ? (
+                <img src={editingMedia.file_url} className="max-h-40 object-contain" alt="preview" />
+              ) : (
+                <i className="fa-solid fa-file text-4xl text-gray-400 py-10"></i>
+              )}
+            </div>
 
-              {/* Media Type */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">
-                  Kategori
-                </label>
-                <select
-                  value={editMediaType}
-                  onChange={(e) => setEditMediaType(e.target.value as any)}
-                  className="w-full px-3 py-2 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-[#0f0f1e] focus:outline-none focus:ring-2 focus:ring-[#00c8ff]"
-                >
-                  <option value="photo">📷 Foto</option>
-                  <option value="video">🎥 Video</option>
-                  <option value="maintenance">🔧 Perbaikan</option>
-                  <option value="model_3d">🧊 Model 3D</option>
-                </select>
-              </div>
+            {/* Media Type */}
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">
+                Kategori
+              </label>
+              <select
+                value={editMediaType}
+                onChange={(e) => setEditMediaType(e.target.value as any)}
+                className="w-full px-3 py-2 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-[#0f0f1e] focus:outline-none focus:ring-2 focus:ring-[#00c8ff]"
+              >
+                <option value="photo">📷 Foto</option>
+                <option value="video">🎥 Video</option>
+                <option value="maintenance">🔧 Perbaikan</option>
+                <option value="model_3d">🧊 Model 3D</option>
+              </select>
+            </div>
 
-              {/* Deskripsi */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">
-                  Deskripsi
-                </label>
-                <textarea
-                  value={editDescription}
-                  onChange={(e) => setEditDescription(e.target.value)}
-                  rows={2}
-                  className="w-full px-3 py-2 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-[#0f0f1e] focus:outline-none focus:ring-2 focus:ring-[#00c8ff]"
-                  placeholder="Deskripsi media..."
-                />
-              </div>
+            {/* Deskripsi */}
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">
+                Deskripsi
+              </label>
+              <textarea
+                value={editDescription}
+                onChange={(e) => setEditDescription(e.target.value)}
+                rows={2}
+                className="w-full px-3 py-2 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-[#0f0f1e] focus:outline-none focus:ring-2 focus:ring-[#00c8ff]"
+                placeholder="Deskripsi media..."
+              />
+            </div>
 
-              {/* Timestamp */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">
-                  Tanggal & Waktu
-                </label>
-                <input
-                  type="datetime-local"
-                  value={editTimestamp}
-                  onChange={(e) => setEditTimestamp(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-[#0f0f1e] focus:outline-none focus:ring-2 focus:ring-[#00c8ff]"
-                />
-              </div>
+            {/* Timestamp */}
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">
+                Tanggal & Waktu
+              </label>
+              <input
+                type="datetime-local"
+                value={editTimestamp}
+                onChange={(e) => setEditTimestamp(e.target.value)}
+                className="w-full px-3 py-2 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-[#0f0f1e] focus:outline-none focus:ring-2 focus:ring-[#00c8ff]"
+              />
+            </div>
 
-              {/* Actions */}
-              <div className="flex gap-2 pt-2">
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={() => setEditingMedia(null)}
-                  className="flex-1 py-2 text-xs rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
-                >
-                  Batal
-                </button>
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={handleSaveEdit}
-                  className="flex-1 py-2 text-xs rounded-lg bg-[#00c8ff] text-white hover:bg-[#00c8ff]/90 disabled:opacity-50 font-medium"
-                >
-                  {saving ? 'Menyimpan...' : '💾 Simpan'}
-                </button>
-              </div>
+            {/* Actions */}
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => setEditingMedia(null)}
+                className="flex-1 py-2 text-xs rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={handleSaveEdit}
+                className="flex-1 py-2 text-xs rounded-lg bg-[#00c8ff] text-white hover:bg-[#00c8ff]/90 disabled:opacity-50 font-medium"
+              >
+                {saving ? 'Menyimpan...' : '💾 Simpan'}
+              </button>
             </div>
           </div>
-        )}
+        </div>
+      )}
+
     </div>
   );
 }
