@@ -111,11 +111,17 @@ export default function BuildingMedia({
   const [uploadIndex, setUploadIndex] = useState(0);
   const [totalProgress, setTotalProgress] = useState(0);
   const [selectedModelUrl, setSelectedModelUrl] = useState<string | null>(null);
-  const [currentMediaIndex, setCurrentMediaIndex] = useState(0);
-  const [isCarouselMode, setIsCarouselMode] = useState(false);
+  const [lightbox, setLightbox] = useState<{
+    items: MediaItem[];
+    index: number;
+  } | null>(null);
   const [likeCounts, setLikeCounts] = useState<Record<string, { count: number; liked: boolean }>>({});
   const [shareCounts, setShareCounts] = useState<Record<string, number>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
+    const lightboxRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showControls, setShowControls] = useState(true);
+  const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ====== STATE EDIT ======
   const [editingMedia, setEditingMedia] = useState<MediaItem | null>(null);
@@ -126,7 +132,51 @@ export default function BuildingMedia({
 
   // ====== CURRENT USER ======
   const currentUserId = getUserIdFromToken(session?.accessToken);
+  const [slideIndexes, setSlideIndexes] = useState<Record<string, number>>({});
 
+
+    const toggleFullscreen = async () => {
+    try {
+      const el = lightboxRef.current;
+      if (!el) return;
+      if (!document.fullscreenElement) {
+        await el.requestFullscreen?.();
+      } else {
+        await document.exitFullscreen?.();
+      }
+    } catch (e) {
+      console.warn('Fullscreen gagal:', e);
+    }
+  };
+
+  // Sinkron status fullscreen (kalau user keluar via Esc browser)
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+
+  // Auto-hide controls setelah 3 detik idle
+  const pokeControls = useCallback(() => {
+    setShowControls(true);
+    if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    controlsTimerRef.current = setTimeout(() => setShowControls(false), 3000);
+  }, []);
+
+  useEffect(() => {
+    if (!lightbox) return;
+    pokeControls();
+    return () => {
+      if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    };
+  }, [lightbox, pokeControls]);
+
+  // Kalau keluar fullscreen / tutup lightbox → exit fullscreen
+  useEffect(() => {
+    if (!lightbox && document.fullscreenElement) {
+      document.exitFullscreen?.().catch(() => {});
+    }
+  }, [lightbox]);
 
     // ===== UPLOADER LABEL =====
     const getUploaderLabel = useCallback(
@@ -152,6 +202,16 @@ export default function BuildingMedia({
   const roleNorm = (userRole || '').toLowerCase();
   const isPolygonRole = ['tpop', 'pob', 'juru', 'supervisor'].includes(roleNorm);
   const safePolygon = ensureClosedRing(userPolygon);
+  
+  function formatDateID(value?: string | null, withTime = false): string {
+  if (!value) return '-';
+  const t = new Date(value).getTime();
+  if (!isFinite(t)) return '-';
+  const opts: Intl.DateTimeFormatOptions = withTime
+    ? { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }
+    : { day: 'numeric', month: 'short', year: 'numeric' };
+  return new Date(t).toLocaleDateString('id-ID', opts);
+}
 
   const buildingInPolygon =
     typeof buildingLat === 'number' && typeof buildingLon === 'number'
@@ -176,6 +236,55 @@ export default function BuildingMedia({
     return true;
   };
 
+  // ⬇️ PINDAHKAN INI KE ATAS grouped
+  const filtered = media.filter((item) => item.media_type === activeTab);
+
+  // ===== KEY STABIL (biar useEffect gak spam) =====
+  const mediaIdsKey = useMemo(
+    () => filtered.map((item) => item._id).sort().join('|'),
+    [filtered]
+  );
+
+  // ===== GROUPING: gabungkan foto yang diupload bersamaan =====
+const grouped = useMemo(() => {
+  if (activeTab !== 'photo') {
+    return filtered.map(item => ({ key: item._id, items: [item] }));
+  }
+
+  const BATCH_WINDOW_MS = 5 * 60 * 1000; // naikkan ke 5 menit (opsional)
+  const groups: { key: string; items: MediaItem[] }[] = [];
+
+  // Helper: ambil waktu valid dari created_at, fallback ke timestamp
+  const getTime = (item: MediaItem): number => {
+    const t = new Date(item.created_at).getTime();
+    if (isFinite(t)) return t;
+    const t2 = new Date(item.timestamp).getTime();
+    if (isFinite(t2)) return t2;
+    return 0;
+  };
+
+  const sorted = [...filtered].sort((a, b) => getTime(a) - getTime(b));
+
+  for (const item of sorted) {
+    const last = groups[groups.length - 1];
+    if (last) {
+      const prev = last.items[last.items.length - 1];
+      const sameUser = String(prev.user_id) === String(item.user_id);
+      const sameDesc = (prev.description || '') === (item.description || '');
+      const sameType = prev.media_type === item.media_type;
+      const sameTimestamp = prev.timestamp === item.timestamp; // ⬅️ paling reliable
+      const dt = Math.abs(getTime(item) - getTime(prev));
+
+      // Group kalau timestamp sama ATAU created_at berdekatan
+      if (sameUser && sameDesc && sameType && (sameTimestamp || dt <= BATCH_WINDOW_MS)) {
+        last.items.push(item);
+        continue;
+      }
+    }
+    groups.push({ key: item._id, items: [item] });
+  }
+  return groups;
+}, [filtered, activeTab]);
   const outsideReason: string | null =
     roleNorm === 'admin' ? null :
     isPolygonRole && !safePolygon
@@ -188,13 +297,6 @@ export default function BuildingMedia({
       ? '📍 Anda tidak memiliki izin upload.'
       : null;
 
-  const filtered = media.filter((item) => item.media_type === activeTab);
-
-  // ===== KEY STABIL (biar useEffect gak spam) =====
-  const mediaIdsKey = useMemo(
-    () => filtered.map((item) => item._id).sort().join('|'),
-    [filtered]
-  );
 
   // ===== CACHE refs (fetch sekali per ID) =====
   const fetchedShareRef = useRef<Set<string>>(new Set());
@@ -617,6 +719,41 @@ export default function BuildingMedia({
     }
   };
 
+    // ============ LIGHTBOX HELPERS ============
+  const openLightbox = (items: MediaItem[], index: number) => {
+    if (!items.length) return;
+    const safe = Math.max(0, Math.min(index, items.length - 1));
+    setLightbox({ items, index: safe });
+  };
+  const closeLightbox = () => setLightbox(null);
+  const lightboxPrev = () =>
+    setLightbox((prev) =>
+      prev ? { ...prev, index: (prev.index - 1 + prev.items.length) % prev.items.length } : null
+    );
+  const lightboxNext = () =>
+    setLightbox((prev) =>
+      prev ? { ...prev, index: (prev.index + 1) % prev.items.length } : null
+    );
+
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (document.fullscreenElement) document.exitFullscreen?.();
+        else closeLightbox();
+      } else if (e.key === 'ArrowLeft') lightboxPrev();
+      else if (e.key === 'ArrowRight') lightboxNext();
+      else if (e.key === 'f' || e.key === 'F') toggleFullscreen();
+    };
+    window.addEventListener('keydown', onKey);
+    const orig = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = orig;
+    };
+  }, [lightbox]);
+
   // ============ EARLY RETURN ============
   if (!buildingId) return null;
 
@@ -700,16 +837,34 @@ export default function BuildingMedia({
               <p className="text-xs">Upload sekarang untuk berbagi momen!</p>
             </div>
           ) : (
-            filtered.map((item, index) => {
-              const isVideo = item.file_type === 'videos' || item.file_type === 'video';
-              const isImage = item.file_type === 'images' || item.file_type === 'image';
-              const isDocument = !isVideo && !isImage;
+              grouped.map((group, groupIndex) => {
+                    const isAlbum = group.items.length > 1;
+                    const slideIdx = slideIndexes[group.key] ?? 0;
+                    const item = group.items[slideIdx];
 
+                    const isVideo = item.file_type === 'videos' || item.file_type === 'video';
+                    const isImage = item.file_type === 'images' || item.file_type === 'image';
+                    const isDocument = !isVideo && !isImage;
+
+                    const goPrev = (e: React.MouseEvent) => {
+                      e.stopPropagation();
+                      setSlideIndexes(prev => ({
+                        ...prev,
+                        [group.key]: slideIdx === 0 ? group.items.length - 1 : slideIdx - 1,
+                      }));
+                    };
+                    const goNext = (e: React.MouseEvent) => {
+                      e.stopPropagation();
+                      setSlideIndexes(prev => ({
+                        ...prev,
+                        [group.key]: (slideIdx + 1) % group.items.length,
+                      }));
+                    };
               return (
                 <div
                   key={item._id}
                   className="media-feed-item media-card group"
-                  style={{ animationDelay: `${index * 0.05}s` }}
+                  style={{ animationDelay: `${groupIndex * 0.05}s` }}
                 >
                   <div className="relative bg-black/5 dark:bg-black/20">
                     {isImage && (
@@ -717,10 +872,7 @@ export default function BuildingMedia({
                         src={item.file_url}
                         alt={item.description || 'Media'}
                         className="w-full max-h-[500px] object-contain cursor-pointer bg-gray-50 dark:bg-gray-900 transition-transform duration-300 group-hover:scale-[1.01]"
-                        onClick={() => {
-                          setCurrentMediaIndex(index);
-                          setIsCarouselMode(true);
-                        }}
+                     onClick={() => openLightbox(group.items, slideIdx)}
                         loading="lazy"
                       />
                     )}
@@ -730,13 +882,178 @@ export default function BuildingMedia({
                         className="w-full max-h-[500px] object-contain rounded-t-2xl cursor-pointer bg-black"
                         controls
                         playsInline
-                        onClick={(e) => {
+                       onClick={(e) => {
                           e.stopPropagation();
-                          setCurrentMediaIndex(index);
-                          setIsCarouselMode(true);
+                          openLightbox(group.items, slideIdx);
                         }}
                       />
                     )}
+
+
+                            {/* ============ LIGHTBOX FULLSCREEN + SLIDER ============ */}
+      {/* ============ LIGHTBOX FULLSCREEN + SLIDER ============ */}
+      {lightbox && (() => {
+        const cur = lightbox.items[lightbox.index];
+        if (!cur) return null;
+        const isVid = cur.file_type === 'videos' || cur.file_type === 'video';
+        const isImg = cur.file_type === 'images' || cur.file_type === 'image';
+        const hasMultiple = lightbox.items.length > 1;
+
+        let touchStartX = 0;
+        const onTouchStart = (e: React.TouchEvent) => {
+          touchStartX = e.touches[0].clientX;
+          pokeControls();
+        };
+        const onTouchEnd = (e: React.TouchEvent) => {
+          const dx = e.changedTouches[0].clientX - touchStartX;
+          if (Math.abs(dx) < 50) return;
+          if (dx < 0) lightboxNext();
+          else lightboxPrev();
+          pokeControls();
+        };
+
+        const ctrlCls = `transition-opacity duration-300 ${
+          showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        }`;
+
+        return (
+          <div
+            ref={lightboxRef}
+            className="fixed inset-0 z-[100] bg-black flex flex-col select-none"
+            onClick={() => {
+              // klik background = tutup (tapi hanya kalau bukan fullscreen supaya tidak annoying)
+              if (!isFullscreen) closeLightbox();
+            }}
+            onMouseMove={pokeControls}
+            onTouchStart={pokeControls}
+          >
+            {/* ===== HEADER ===== */}
+            <div
+              className={`flex items-center justify-between px-4 py-3 text-white shrink-0 bg-gradient-to-b from-black/80 to-transparent absolute top-0 left-0 right-0 z-30 ${ctrlCls}`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="text-xs opacity-80 tabular-nums bg-white/10 px-3 py-1 rounded-full backdrop-blur-sm">
+                {lightbox.index + 1} / {lightbox.items.length}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={toggleFullscreen}
+                  className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/25 flex items-center justify-center transition backdrop-blur-sm"
+                  title={isFullscreen ? 'Keluar fullscreen (F)' : 'Fullscreen (F)'}
+                >
+                  <i className={`fa-solid ${isFullscreen ? 'fa-compress' : 'fa-expand'}`}></i>
+                </button>
+                <button
+                  type="button"
+                  onClick={closeLightbox}
+                  className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/25 flex items-center justify-center transition backdrop-blur-sm"
+                  title="Tutup (Esc)"
+                >
+                  <i className="fa-solid fa-xmark"></i>
+                </button>
+              </div>
+            </div>
+
+            {/* ===== CONTENT ===== */}
+            <div
+              className="relative flex-1 flex items-center justify-center overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+              onTouchStart={onTouchStart}
+              onTouchEnd={onTouchEnd}
+              onDoubleClick={toggleFullscreen}
+            >
+              {hasMultiple && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); lightboxPrev(); pokeControls(); }}
+                  className={`absolute left-3 top-1/2 -translate-y-1/2 z-20 w-12 h-12 rounded-full bg-black/50 hover:bg-black/80 text-white flex items-center justify-center backdrop-blur-sm ${ctrlCls}`}
+                  title="Sebelumnya (←)"
+                >
+                  <i className="fa-solid fa-chevron-left text-lg"></i>
+                </button>
+              )}
+
+              {isImg && (
+                <img
+                  src={cur.file_url}
+                  alt={cur.description || 'Media'}
+                  className="max-h-full max-w-full object-contain animate-[fadeIn_0.25s_ease]"
+                  draggable={false}
+                  onDoubleClick={(e) => { e.stopPropagation(); toggleFullscreen(); }}
+                />
+              )}
+              {isVid && (
+                <video
+                  key={cur._id}
+                  src={cur.file_url}
+                  controls
+                  autoPlay
+                  playsInline
+                  className="max-h-full max-w-full"
+                />
+              )}
+              {!isImg && !isVid && (
+                <div className="text-white/80 text-sm text-center">
+                  <i className="fa-solid fa-file text-5xl block mb-3"></i>
+                  Dokumen tidak dapat dipreview
+                  <div className="mt-4">
+                    <a
+                      href={cur.file_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-4 py-2 bg-[#00c8ff] rounded-full text-white text-xs font-medium"
+                    >
+                      Buka di tab baru
+                    </a>
+                  </div>
+                </div>
+              )}
+
+              {hasMultiple && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); lightboxNext(); pokeControls(); }}
+                  className={`absolute right-3 top-1/2 -translate-y-1/2 z-20 w-12 h-12 rounded-full bg-black/50 hover:bg-black/80 text-white flex items-center justify-center backdrop-blur-sm ${ctrlCls}`}
+                  title="Berikutnya (→)"
+                >
+                  <i className="fa-solid fa-chevron-right text-lg"></i>
+                </button>
+              )}
+            </div>
+
+            {/* ===== FOOTER: dots + caption ===== */}
+            <div
+              className={`shrink-0 pb-5 pt-2 px-4 text-center text-white/90 bg-gradient-to-t from-black/90 via-black/60 to-transparent absolute bottom-0 left-0 right-0 z-30 ${ctrlCls}`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {hasMultiple && (
+                <div className="flex justify-center gap-1.5 flex-wrap mb-2">
+                  {lightbox.items.map((_, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => {
+                        setLightbox((prev) => (prev ? { ...prev, index: i } : null));
+                        pokeControls();
+                      }}
+                      className={`h-1.5 rounded-full transition-all ${
+                        i === lightbox.index ? 'bg-white w-6' : 'bg-white/40 w-1.5 hover:bg-white/70'
+                      }`}
+                    />
+                  ))}
+                </div>
+              )}
+              <p className="text-sm font-medium line-clamp-2">
+                {cur.description || 'Tanpa deskripsi'}
+              </p>
+              <p className="text-[11px] text-white/50 mt-1">
+                {formatDateID(cur.timestamp || cur.created_at, true)}
+              </p>
+            </div>
+          </div>
+        );
+      })()}
                     {isDocument && (
                       <div className="w-full h-48 flex flex-col items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-400 cursor-pointer" onClick={() => window.open(item.file_url, '_blank')}>
                         <i className="fa-solid fa-file-pdf text-5xl mb-2"></i>
@@ -751,9 +1068,50 @@ export default function BuildingMedia({
                       {item.media_type === 'maintenance' && '🔧 Perbaikan'}
                     </div>
 
-                    <div className="absolute bottom-3 right-3 z-10 bg-black/40 backdrop-blur-sm text-white text-[10px] px-2.5 py-1 rounded-full">
-                      {index + 1} / {filtered.length}
+                    <div className="absolute bottom-3 right-3 z-10 bg-black/40 ...">
+                      {isAlbum
+                        ? `${slideIdx + 1} / ${group.items.length}`
+                        : `${groupIndex + 1} / ${grouped.length}`}
                     </div>
+
+                         {/* ===== SLIDER CONTROLS (khusus album) ===== */}
+                        {isAlbum && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={goPrev}
+                              className="absolute left-2 top-1/2 -translate-y-1/2 z-20 w-9 h-9 rounded-full bg-black/50 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/70 transition shadow-lg"
+                              title="Sebelumnya"
+                            >
+                              <i className="fa-solid fa-chevron-left text-xs"></i>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={goNext}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 z-20 w-9 h-9 rounded-full bg-black/50 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/70 transition shadow-lg"
+                              title="Berikutnya"
+                            >
+                              <i className="fa-solid fa-chevron-right text-xs"></i>
+                            </button>
+
+                            {/* Dots indicator */}
+                            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex gap-1.5 bg-black/40 backdrop-blur-sm px-2 py-1 rounded-full">
+                              {group.items.map((_, i) => (
+                                <button
+                                  key={i}
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSlideIndexes(prev => ({ ...prev, [group.key]: i }));
+                                  }}
+                                  className={`h-1.5 rounded-full transition-all ${
+                                    i === slideIdx ? 'bg-white w-4' : 'bg-white/50 w-1.5'
+                                  }`}
+                                />
+                              ))}
+                            </div>
+                          </>
+                        )}
 
                       {canModifyMedia(item) && (
                         <div className="absolute top-3 right-3 z-10 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -825,24 +1183,12 @@ export default function BuildingMedia({
                     <div className="flex items-center gap-3 text-[10px] text-gray-500 dark:text-gray-400">
                       <span className="flex items-center gap-1">
                         <i className="fa-regular fa-calendar"></i>
-                        {item.timestamp
-                          ? new Date(item.timestamp).toLocaleDateString('id-ID', {
-                              day: 'numeric',
-                              month: 'short',
-                              year: 'numeric',
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })
-                          : '-'}
+                          {formatDateID(item.timestamp || item.created_at, true)}
                       </span>
                       <span className="w-1 h-1 rounded-full bg-gray-300 dark:bg-gray-600"></span>
                       <span className="flex items-center gap-1">
                         <i className="fa-regular fa-clock"></i>
-                        {new Date(item.created_at).toLocaleDateString('id-ID', {
-                          day: 'numeric',
-                          month: 'short',
-                          year: 'numeric',
-                        })}
+                          {formatDateID(item.created_at || item.timestamp, false)}
                       </span>
                     </div>
 
