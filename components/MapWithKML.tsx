@@ -46,6 +46,8 @@ import 'leaflet.heat';
 import MusimTanamPanel from '@/components/MusimTanamPanel';
 import {  MUSIM_TANAM_STATUS } from '@/hooks/useMusimTanam';
 // Hapus baris ini: declare module 'leaflet.heat';
+import UserProfile from '@/components/UserProfile';
+
 declare module 'leaflet' {
   function heat(latlngs: any[], options?: any): any;
 }
@@ -176,6 +178,7 @@ export default function MapWithKML() {
   if (!API_URL) throw new Error('NEXT_PUBLIC_API_URL belum dikonfigurasi');
   // HOOK HASHTAG
   const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [isUserProfileOpen, setIsUserProfileOpen] = useState(false);
   const { tagFilter, setTagFilter, filteredPoints, filteredLines, filteredPolygons, allTags } = useHashtagFilter(geoData);
   // State untuk data batas desa
   const [showTerrain, setShowTerrain] = useState(false);
@@ -2238,19 +2241,32 @@ if (showWind && envData?.windSpeed) {
                         <p className="font-medium truncate">{session.user?.email}</p>
                         <p className="text-[10px] text-gray-400 mt-0.5">Role: {session.user?.role || 'user'}</p>
                       </div>
+
+                      {/* 🔥 TOMBOL PROFIL */}
+                      <button
+                        onClick={() => {
+                          setIsProfileOpen(false);
+                          setIsUserProfileOpen(true);
+                        }}
+                        className="w-full text-left px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-[#2a2a4e] transition flex items-center gap-2"
+                      >
+                        <i className="fa-solid fa-user text-base text-[#00c8ff]"></i>
+                        <span>Lihat Profil</span>
+                      </button>
+
                       <button
                         onClick={() => {
                           signOut();
                           setIsProfileOpen(false);
                         }}
-                        className="w-full text-left px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition flex items-center gap-2"
+                        className="w-full text-left px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition flex items-center gap-2 border-t border-gray-100 dark:border-[#2a2a4e]"
                       >
                         <i className="fa-solid fa-right-from-bracket text-base"></i>
                         <span>Logout</span>
                       </button>
                     </div>
                   )}
-                </div>
+                                  </div>
               ) : (
                 <button
                   onClick={() => signIn()}
@@ -2535,6 +2551,11 @@ if (showWind && envData?.windSpeed) {
           <i className={`fa-solid ${isPanelOpen ? 'fa-chevron-right' : 'fa-chevron-up'} sm:fa-chevron-left`}></i>
         </button>
       </div>
+             <UserProfile
+        open={isUserProfileOpen}
+        onClose={() => setIsUserProfileOpen(false)}
+      />
+      
         {/* FOOTER */}
     <footer className="flex-shrink-0 w-full border-t border-gray-200 dark:border-[#2a2a4e] bg-white dark:bg-[#0f0f23] px-4 py-2">
       <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-gray-500 dark:text-gray-400">
