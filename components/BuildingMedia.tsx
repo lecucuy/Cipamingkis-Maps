@@ -7,6 +7,8 @@ import axios from 'axios';
 import imageCompression from 'browser-image-compression';
 import Model3DViewer from '@/components/Model3DViewer';
 import { toast } from 'react-hot-toast';
+import UploadModal from '@/components/media/UploadModal';
+
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
@@ -111,7 +113,7 @@ export default function BuildingMedia({
   const [uploadIndex, setUploadIndex] = useState(0);
   const [totalProgress, setTotalProgress] = useState(0);
   const [selectedModelUrl, setSelectedModelUrl] = useState<string | null>(null);
-
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [likeCounts, setLikeCounts] = useState<Record<string, { count: number; liked: boolean }>>({});
   const [shareCounts, setShareCounts] = useState<Record<string, number>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -540,19 +542,6 @@ const grouped = useMemo(() => {
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Yakin hapus media ini?')) return;
-    try {
-      await axios.delete(`${API_URL}/buildings/media/${id}`, {
-        headers: { 'Authorization': `Bearer ${session?.accessToken}` },
-      });
-      await loadMedia();
-      alert('✅ Media berhasil dihapus!');
-    } catch (err: any) {
-      console.error('Gagal hapus:', err);
-      alert('❌ Gagal hapus media');
-    }
-  };
 
   const openEditModal = (item: MediaItem) => {
     if (!canModifyMedia(item)) {
@@ -877,26 +866,19 @@ const grouped = useMemo(() => {
                       </>
                     )}
 
-                    {canModifyMedia(item) && (
-                      <div className="absolute top-3 right-3 z-10 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button
-                          type="button"
-                          onClick={() => openEditModal(item)}
-                          className="w-8 h-8 rounded-full bg-blue-500/85 text-white flex items-center justify-center hover:bg-blue-600 shadow-lg"
-                          title="Edit"
-                        >
-                          <i className="fa-solid fa-pen text-xs"></i>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(item._id)}
-                          className="w-8 h-8 rounded-full bg-red-500/85 text-white flex items-center justify-center hover:bg-red-600 shadow-lg"
-                          title="Hapus"
-                        >
-                          <i className="fa-solid fa-trash text-xs"></i>
-                        </button>
-                      </div>
-                    )}
+                      {canModifyMedia(item) && (
+                        <div className="absolute top-3 right-3 z-10 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            type="button"
+                            onClick={() => openEditModal(item)}
+                            className="w-8 h-8 rounded-full bg-blue-500/85 text-white flex items-center justify-center hover:bg-blue-600 shadow-lg"
+                            title="Edit"
+                          >
+                            <i className="fa-solid fa-pen text-xs"></i>
+                          </button>
+                          {/* Tombol Hapus dipindah ke Profil → Upload Saya */}
+                        </div>
+                      )}
                   </div>
 
                   <div className="p-3 space-y-1.5">
@@ -1000,147 +982,38 @@ const grouped = useMemo(() => {
 
       {session && (
         <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mt-2">
-          <p className="text-xs font-medium text-gray-600 dark:text-gray-300 mb-2">
-            Tambah {activeTab === 'maintenance' ? 'Perbaikan' : activeTab === 'video' ? 'Video' : activeTab === 'model_3d' ? 'Model 3D' : 'Foto'}
-          </p>
-
-          {!canUploadHere && outsideReason && (
-            <div className="mb-2 text-[11px] text-red-500 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-2 py-1.5">
-              <i className="fa-solid fa-lock mr-1"></i>
-              {outsideReason}
-            </div>
-          )}
-
-          <div
-            className={`relative border-2 border-dashed rounded-xl p-4 transition-all ${
-              isDragging
-                ? 'border-[#00c8ff] bg-[#00c8ff]/5'
-                : canUploadHere
-                ? 'border-gray-300 dark:border-gray-600 hover:border-[#00c8ff]'
-                : 'border-gray-200 dark:border-gray-700 opacity-60'
+          <button
+            type="button"
+            onClick={() => canUploadHere && setUploadModalOpen(true)}
+            disabled={!canUploadHere}
+            className={`w-full py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 transition-all ${
+              canUploadHere
+                ? 'bg-gradient-to-r from-[#00c8ff] to-blue-600 text-white hover:shadow-lg hover:shadow-[#00c8ff]/30'
+                : 'bg-gray-200 dark:bg-gray-800 text-gray-400 cursor-not-allowed'
             }`}
-            onDragEnter={canUploadHere ? handleDragEnter : undefined}
-            onDragLeave={canUploadHere ? handleDragLeave : undefined}
-            onDragOver={canUploadHere ? handleDragOver : undefined}
-            onDrop={canUploadHere ? (e) => {
-              e.preventDefault();
-              setIsDragging(false);
-              const files = e.dataTransfer.files;
-              if (files && files.length) {
-                const validFiles = Array.from(files).filter(f => f.size <= 100 * 1024 * 1024);
-                setSelectedFiles(prev => [...prev, ...validFiles]);
-              }
-            } : (e) => { e.preventDefault(); }}
           >
-            <input
-              type="file"
-              ref={fileInputRef}
-              multiple
-              disabled={!canUploadHere}
-              accept={
-                activeTab === 'video'
-                  ? 'video/*'
-                  : activeTab === 'maintenance'
-                  ? 'application/pdf,image/*'
-                  : activeTab === 'model_3d'
-                  ? '.glb,.gltf'
-                  : 'image/*,image/heic,image/heif'
-              }
-              onChange={handleFileChange}
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-            />
-            <div className="text-center text-xs text-gray-500 dark:text-gray-400 pointer-events-none">
-              {selectedFiles.length > 0 ? (
-                <div className="space-y-1">
-                  <p className="font-medium">{selectedFiles.length} file siap diupload</p>
-                  <div className="flex flex-wrap gap-1 justify-center">
-                    {selectedFiles.slice(0, 5).map((f, idx) => (
-                      <span key={idx} className="bg-gray-200 dark:bg-gray-700 px-2 py-0.5 rounded-full text-[10px]">
-                        {f.name} ({(f.size/1024/1024).toFixed(1)}MB)
-                      </span>
-                    ))}
-                    {selectedFiles.length > 5 && <span className="text-gray-400">+{selectedFiles.length-5} lagi</span>}
-                  </div>
-                  <div className="flex justify-center gap-2 mt-1">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedFiles([])}
-                      className="text-red-500 text-[10px] hover:underline"
-                    >
-                      Hapus semua
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <i className="fa-solid fa-cloud-upload-alt text-2xl text-gray-300 dark:text-gray-500 mb-1 block"></i>
-                  <span className="font-medium">Seret file ke sini atau klik untuk pilih</span>
-                  <p className="text-[10px] text-gray-400 mt-1">
-                    {activeTab === 'video'
-                      ? 'MP4, WebM, MOV (max 100MB)'
-                      : activeTab === 'maintenance'
-                      ? 'PDF, Gambar (max 100MB)'
-                      : activeTab === 'model_3d'
-                      ? 'GLB, GLTF (max 100MB)'
-                      : 'JPG, PNG, GIF, WebP, HEIC (max 100MB)'}
-                  </p>
-                </>
-              )}
-            </div>
-          </div>
+            <i className={`fa-solid ${canUploadHere ? 'fa-plus-circle' : 'fa-lock'}`}></i>
+            <span>
+              {canUploadHere
+                ? `Tambah ${activeTab === 'maintenance' ? 'Perbaikan' : activeTab === 'video' ? 'Video' : activeTab === 'model_3d' ? 'Model 3D' : 'Foto'}`
+                : (outsideReason || 'Upload tidak diizinkan')}
+            </span>
+          </button>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
-            <input
-              type="text"
-              placeholder="Deskripsi (opsional)"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              className="px-3 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-[#1a1a2e] focus:outline-none focus:ring-2 focus:ring-[#00c8ff]"
-            />
-            <div className="flex items-center gap-2">
-              <div className="relative flex-1">
-                <i className="fa-solid fa-calendar-alt absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
-                <input
-                  type="datetime-local"
-                  value={timestamp}
-                  onChange={(e) => setTimestamp(e.target.value)}
-                  className="w-full pl-8 pr-3 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-[#1a1a2e] focus:outline-none focus:ring-2 focus:ring-[#00c8ff]"
-                  placeholder="Pilih tanggal & waktu"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-3 space-y-2">
-            <button
-              type="button"
-              onClick={handleMultipleUpload}
-              disabled={selectedFiles.length === 0 || uploading || !canUploadHere}
-              className={`w-full py-2 text-xs font-medium rounded-lg transition-all ${
-                selectedFiles.length === 0 || uploading || !canUploadHere
-                  ? 'bg-gray-300 dark:bg-gray-600 text-gray-500 cursor-not-allowed'
-                  : 'bg-[#00c8ff] text-white hover:bg-[#00c8ff]/90 shadow-md hover:shadow-lg'
-              }`}
-            >
-              {uploading ? (
-                <span>
-                  Uploading {uploadIndex}/{selectedFiles.length} ({totalProgress}%)
-                </span>
-              ) : !canUploadHere ? (
-                <span>🔒 Upload tidak diizinkan di sini</span>
-              ) : (
-                <span>📤 Upload {selectedFiles.length} file</span>
-              )}
-            </button>
-            {uploading && (
-              <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-[#00c8ff] transition-all duration-300 rounded-full"
-                  style={{ width: `${totalProgress}%` }}
-                />
-              </div>
-            )}
-          </div>
+          <UploadModal
+            open={uploadModalOpen}
+            onClose={() => setUploadModalOpen(false)}
+            buildingId={buildingId}
+            buildingName={buildingName}
+            mediaType={activeTab}
+            token={session.accessToken as string}
+            canUpload={canUploadHere}
+            outsideReason={outsideReason}
+            onSuccess={() => {
+              loadMedia();
+              onMediaChange?.();
+            }}
+          />
         </div>
       )}
 
@@ -1249,6 +1122,25 @@ const grouped = useMemo(() => {
                 placeholder="Deskripsi media..."
               />
             </div>
+
+              {item.mentions && item.mentions.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-1">
+              {item.mentions.slice(0, 3).map((m: any, i: number) => (
+                <span
+                  key={i}
+                  className="text-[9px] px-1.5 py-0.5 rounded-full bg-[#00c8ff]/10 text-[#00c8ff] font-medium border border-[#00c8ff]/20"
+                >
+                  <i className="fa-solid fa-at text-[7px] mr-0.5"></i>
+                  {m.username || m}
+                </span>
+              ))}
+              {item.mentions.length > 3 && (
+                <span className="text-[9px] text-gray-400">
+                  +{item.mentions.length - 3}
+                </span>
+              )}
+            </div>
+          )}
 
             {/* Timestamp */}
             <div>

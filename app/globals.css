@@ -152,3 +152,8 @@ body {
     bottom: calc(60vh + 20px) !important;
   }
 }
+
+@keyframes slideInLeft {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(0); }
+}

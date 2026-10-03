@@ -1,6 +1,6 @@
 // components/MapWithKML.tsx
 'use client';
-
+import { useRouter } from 'next/navigation';
 import { useSession, signIn, signOut } from "next-auth/react";
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as turf from '@turf/turf';
@@ -45,8 +45,6 @@ import {
 import 'leaflet.heat';
 import MusimTanamPanel from '@/components/MusimTanamPanel';
 import {  MUSIM_TANAM_STATUS } from '@/hooks/useMusimTanam';
-// Hapus baris ini: declare module 'leaflet.heat';
-import UserProfile from '@/components/UserProfile';
 
 declare module 'leaflet' {
   function heat(latlngs: any[], options?: any): any;
@@ -178,7 +176,6 @@ export default function MapWithKML() {
   if (!API_URL) throw new Error('NEXT_PUBLIC_API_URL belum dikonfigurasi');
   // HOOK HASHTAG
   const [isProfileOpen, setIsProfileOpen] = useState(false);
-  const [isUserProfileOpen, setIsUserProfileOpen] = useState(false);
   const { tagFilter, setTagFilter, filteredPoints, filteredLines, filteredPolygons, allTags } = useHashtagFilter(geoData);
   // State untuk data batas desa
   const [showTerrain, setShowTerrain] = useState(false);
@@ -194,8 +191,8 @@ export default function MapWithKML() {
     if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km`;
     return `${Math.round(meters)} m`;
   };
-const [showMusimTanam, setShowMusimTanam] = useState(false);
-
+  const [showMusimTanam, setShowMusimTanam] = useState(false);
+  const router = useRouter();
 // 🔥 Fetch musim tanam langsung (public, tanpa butuh login)
 const [musimTanamByPolygon, setMusimTanamByPolygon] = useState<Record<string, any>>({});
 
@@ -2246,7 +2243,7 @@ if (showWind && envData?.windSpeed) {
                       <button
                         onClick={() => {
                           setIsProfileOpen(false);
-                          setIsUserProfileOpen(true);
+                          router.push('/profile');
                         }}
                         className="w-full text-left px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-[#2a2a4e] transition flex items-center gap-2"
                       >
@@ -2528,9 +2525,7 @@ if (showWind && envData?.windSpeed) {
             </div>
           </div>
         </div>
-            
-
-            
+ 
         {/* TOGGLE PANEL BUTTON */}
         <button
           onClick={() => setIsPanelOpen(!isPanelOpen)}
@@ -2551,10 +2546,6 @@ if (showWind && envData?.windSpeed) {
           <i className={`fa-solid ${isPanelOpen ? 'fa-chevron-right' : 'fa-chevron-up'} sm:fa-chevron-left`}></i>
         </button>
       </div>
-             <UserProfile
-        open={isUserProfileOpen}
-        onClose={() => setIsUserProfileOpen(false)}
-      />
       
         {/* FOOTER */}
     <footer className="flex-shrink-0 w-full border-t border-gray-200 dark:border-[#2a2a4e] bg-white dark:bg-[#0f0f23] px-4 py-2">
