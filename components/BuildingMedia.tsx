@@ -27,6 +27,7 @@ interface MediaItem {
   user_full_name?: string | null;
   user_role?: string | null;
   user_exists?: boolean;    // 🔥 BARU
+  mentions?: Array<{ id: string; username: string; full_name?: string | null }>;
 }
 
 interface BuildingMediaProps {
@@ -923,9 +924,29 @@ const grouped = useMemo(() => {
                       );
                     })()}
 
-                    <p className="text-sm font-medium text-gray-800 dark:text-white line-clamp-2">
-                      {item.description || 'Tanpa deskripsi'}
-                    </p>
+                      <p className="text-sm font-medium text-gray-800 dark:text-white line-clamp-2">
+                        {item.description || 'Tanpa deskripsi'}
+                      </p>
+
+                      {/* ===== MENTIONS (chip) ===== */}
+                      {item.mentions && item.mentions.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {item.mentions.slice(0, 3).map((m: any, i: number) => (
+                            <span
+                              key={i}
+                              className="text-[9px] px-1.5 py-0.5 rounded-full bg-[#00c8ff]/10 text-[#00c8ff] font-medium border border-[#00c8ff]/20"
+                            >
+                              <i className="fa-solid fa-at text-[7px] mr-0.5"></i>
+                              {m.username || m}
+                            </span>
+                          ))}
+                          {item.mentions.length > 3 && (
+                            <span className="text-[9px] text-gray-400">
+                              +{item.mentions.length - 3}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     <div className="flex items-center gap-3 text-[10px] text-gray-500 dark:text-gray-400">
                       <span className="flex items-center gap-1">
                         <i className="fa-regular fa-calendar"></i>
@@ -1123,24 +1144,6 @@ const grouped = useMemo(() => {
               />
             </div>
 
-              {item.mentions && item.mentions.length > 0 && (
-            <div className="flex flex-wrap gap-1 mt-1">
-              {item.mentions.slice(0, 3).map((m: any, i: number) => (
-                <span
-                  key={i}
-                  className="text-[9px] px-1.5 py-0.5 rounded-full bg-[#00c8ff]/10 text-[#00c8ff] font-medium border border-[#00c8ff]/20"
-                >
-                  <i className="fa-solid fa-at text-[7px] mr-0.5"></i>
-                  {m.username || m}
-                </span>
-              ))}
-              {item.mentions.length > 3 && (
-                <span className="text-[9px] text-gray-400">
-                  +{item.mentions.length - 3}
-                </span>
-              )}
-            </div>
-          )}
 
             {/* Timestamp */}
             <div>
