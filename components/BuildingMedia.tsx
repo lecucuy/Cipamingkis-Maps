@@ -22,11 +22,10 @@ interface MediaItem {
   description: string;
   timestamp: string;
   created_at: string;
-  // ===== BARU: dari enrich_media_with_user =====
   user_name?: string | null;
   user_full_name?: string | null;
   user_role?: string | null;
-  user_exists?: boolean;    // 🔥 BARU
+  user_exists?: boolean;
   mentions?: Array<{ id: string; username: string; full_name?: string | null }>;
 }
 
@@ -41,7 +40,7 @@ interface BuildingMediaProps {
   userLocation?: { lat: number; lng: number } | null;
 }
 
-// ============ MODULE-LEVEL HELPERS (hoisting-safe) ============
+// ============ MODULE-LEVEL HELPERS ============
 function ensureClosedRing(poly?: number[][] | null): number[][] | null {
   if (!Array.isArray(poly) || poly.length < 3) return null;
   const ring: number[][] = [];
@@ -119,6 +118,19 @@ export default function BuildingMedia({
   const [shareCounts, setShareCounts] = useState<Record<string, number>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // ===== FULLSCREEN SLIDER =====
+  const [fullscreenGroupKey, setFullscreenGroupKey] = useState<string | null>(null);
+  const touchStartXRef = useRef<number | null>(null);
+  const touchDeltaXRef = useRef<number>(0);
+
+  // ===== TIKTOK-STYLE VIDEO FEED =====
+  const videoFeedRef = useRef<HTMLDivElement | null>(null);
+  const videoRefsMap = useRef<Map<string, HTMLVideoElement>>(new Map());
+  const ioRef = useRef<IntersectionObserver | null>(null);
+  const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
+  const [mutedVideos, setMutedVideos] = useState<Record<string, boolean>>({});
+  const [pausedVideos, setPausedVideos] = useState<Record<string, boolean>>({});
+
   // ====== STATE EDIT ======
   const [editingMedia, setEditingMedia] = useState<MediaItem | null>(null);
   const [editDescription, setEditDescription] = useState('');
@@ -130,41 +142,41 @@ export default function BuildingMedia({
   const currentUserId = getUserIdFromToken(session?.accessToken);
   const [slideIndexes, setSlideIndexes] = useState<Record<string, number>>({});
 
+  // ===== UPLOADER LABEL =====
+  const getUploaderLabel = useCallback(
+    (item: MediaItem): { name: string; isMe: boolean; role?: string | null; deleted: boolean } => {
+      const isMe = !!currentUserId && String(item.user_id) === String(currentUserId);
 
-    // ===== UPLOADER LABEL =====
-    const getUploaderLabel = useCallback(
-      (item: MediaItem): { name: string; isMe: boolean; role?: string | null; deleted: boolean } => {
-        const isMe = !!currentUserId && String(item.user_id) === String(currentUserId);
+      if (item.user_exists === false && !isMe) {
+        return { name: 'User Terhapus', isMe: false, role: null, deleted: true };
+      }
 
-        if (item.user_exists === false && !isMe) {
-          return { name: 'User Terhapus', isMe: false, role: null, deleted: true };
-        }
+      const rawName =
+        item.user_name ||
+        item.user_full_name ||
+        (isMe ? (session?.user as any)?.name : null) ||
+        (isMe ? (session?.user as any)?.email?.split('@')[0] : null) ||
+        'Anonim';
 
-        const rawName =
-          item.user_name ||
-          item.user_full_name ||
-          (isMe ? (session?.user as any)?.name : null) ||
-          (isMe ? (session?.user as any)?.email?.split('@')[0] : null) ||
-          'Anonim';
+      return { name: rawName, isMe, role: item.user_role, deleted: false };
+    },
+    [currentUserId, session]
+  );
 
-        return { name: rawName, isMe, role: item.user_role, deleted: false };
-      },
-      [currentUserId, session]
-    );
   // ============ COMPUTED PERMISSION ============
   const roleNorm = (userRole || '').toLowerCase();
   const isPolygonRole = ['tpop', 'pob', 'juru', 'supervisor'].includes(roleNorm);
   const safePolygon = ensureClosedRing(userPolygon);
-  
+
   function formatDateID(value?: string | null, withTime = false): string {
-  if (!value) return '-';
-  const t = new Date(value).getTime();
-  if (!isFinite(t)) return '-';
-  const opts: Intl.DateTimeFormatOptions = withTime
-    ? { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }
-    : { day: 'numeric', month: 'short', year: 'numeric' };
-  return new Date(t).toLocaleDateString('id-ID', opts);
-}
+    if (!value) return '-';
+    const t = new Date(value).getTime();
+    if (!isFinite(t)) return '-';
+    const opts: Intl.DateTimeFormatOptions = withTime
+      ? { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }
+      : { day: 'numeric', month: 'short', year: 'numeric' };
+    return new Date(t).toLocaleDateString('id-ID', opts);
+  }
 
   const buildingInPolygon =
     typeof buildingLat === 'number' && typeof buildingLon === 'number'
@@ -189,55 +201,52 @@ export default function BuildingMedia({
     return true;
   };
 
-  // ⬇️ PINDAHKAN INI KE ATAS grouped
   const filtered = media.filter((item) => item.media_type === activeTab);
 
-  // ===== KEY STABIL (biar useEffect gak spam) =====
   const mediaIdsKey = useMemo(
     () => filtered.map((item) => item._id).sort().join('|'),
     [filtered]
   );
 
-  // ===== GROUPING: gabungkan foto yang diupload bersamaan =====
-const grouped = useMemo(() => {
-  if (activeTab !== 'photo') {
-    return filtered.map(item => ({ key: item._id, items: [item] }));
-  }
-
-  const BATCH_WINDOW_MS = 5 * 60 * 1000; // naikkan ke 5 menit (opsional)
-  const groups: { key: string; items: MediaItem[] }[] = [];
-
-  // Helper: ambil waktu valid dari created_at, fallback ke timestamp
-  const getTime = (item: MediaItem): number => {
-    const t = new Date(item.created_at).getTime();
-    if (isFinite(t)) return t;
-    const t2 = new Date(item.timestamp).getTime();
-    if (isFinite(t2)) return t2;
-    return 0;
-  };
-
-  const sorted = [...filtered].sort((a, b) => getTime(a) - getTime(b));
-
-  for (const item of sorted) {
-    const last = groups[groups.length - 1];
-    if (last) {
-      const prev = last.items[last.items.length - 1];
-      const sameUser = String(prev.user_id) === String(item.user_id);
-      const sameDesc = (prev.description || '') === (item.description || '');
-      const sameType = prev.media_type === item.media_type;
-      const sameTimestamp = prev.timestamp === item.timestamp; // ⬅️ paling reliable
-      const dt = Math.abs(getTime(item) - getTime(prev));
-
-      // Group kalau timestamp sama ATAU created_at berdekatan
-      if (sameUser && sameDesc && sameType && (sameTimestamp || dt <= BATCH_WINDOW_MS)) {
-        last.items.push(item);
-        continue;
-      }
+  // ===== GROUPING =====
+  const grouped = useMemo(() => {
+    if (activeTab !== 'photo') {
+      return filtered.map(item => ({ key: item._id, items: [item] }));
     }
-    groups.push({ key: item._id, items: [item] });
-  }
-  return groups;
-}, [filtered, activeTab]);
+
+    const BATCH_WINDOW_MS = 5 * 60 * 1000;
+    const groups: { key: string; items: MediaItem[] }[] = [];
+
+    const getTime = (item: MediaItem): number => {
+      const t = new Date(item.created_at).getTime();
+      if (isFinite(t)) return t;
+      const t2 = new Date(item.timestamp).getTime();
+      if (isFinite(t2)) return t2;
+      return 0;
+    };
+
+    const sorted = [...filtered].sort((a, b) => getTime(a) - getTime(b));
+
+    for (const item of sorted) {
+      const last = groups[groups.length - 1];
+      if (last) {
+        const prev = last.items[last.items.length - 1];
+        const sameUser = String(prev.user_id) === String(item.user_id);
+        const sameDesc = (prev.description || '') === (item.description || '');
+        const sameType = prev.media_type === item.media_type;
+        const sameTimestamp = prev.timestamp === item.timestamp;
+        const dt = Math.abs(getTime(item) - getTime(prev));
+
+        if (sameUser && sameDesc && sameType && (sameTimestamp || dt <= BATCH_WINDOW_MS)) {
+          last.items.push(item);
+          continue;
+        }
+      }
+      groups.push({ key: item._id, items: [item] });
+    }
+    return groups;
+  }, [filtered, activeTab]);
+
   const outsideReason: string | null =
     roleNorm === 'admin' ? null :
     isPolygonRole && !safePolygon
@@ -250,12 +259,9 @@ const grouped = useMemo(() => {
       ? '📍 Anda tidak memiliki izin upload.'
       : null;
 
-
-  // ===== CACHE refs (fetch sekali per ID) =====
   const fetchedShareRef = useRef<Set<string>>(new Set());
   const fetchedLikeRef = useRef<Set<string>>(new Set());
 
-  // ============ UPLOAD PERMISSION CHECK ============
   const checkUploadPermission = useCallback((): boolean => {
     if (!session?.accessToken) {
       alert('Login dulu!');
@@ -268,7 +274,6 @@ const grouped = useMemo(() => {
     return true;
   }, [session, canUploadHere, outsideReason]);
 
-  // ============ LOAD MEDIA ============
   const loadMedia = useCallback(async () => {
     if (!buildingId) return;
     try {
@@ -277,9 +282,8 @@ const grouped = useMemo(() => {
       const items = mediaData[buildingId] || [];
       setMedia(items);
     } catch (err: any) {
-      if (err.response?.status === 404) {
-        setMedia([]);
-      } else {
+      if (err.response?.status === 404) setMedia([]);
+      else {
         console.error('Gagal load media:', err);
         setMedia([]);
       }
@@ -288,61 +292,47 @@ const grouped = useMemo(() => {
     }
   }, [buildingId]);
 
-  useEffect(() => {
-    loadMedia();
-  }, [loadMedia]);
+  useEffect(() => { loadMedia(); }, [loadMedia]);
 
-  // ============ FETCH LIKE STATUS (sekali per ID) ============
+  // ============ FETCH LIKE STATUS ============
   useEffect(() => {
     const ids = mediaIdsKey ? mediaIdsKey.split('|') : [];
     const toFetch = ids.filter(id => !fetchedLikeRef.current.has(id));
     if (toFetch.length === 0) return;
 
     let cancelled = false;
-
     (async () => {
       const headers = session?.accessToken
         ? { Authorization: `Bearer ${session.accessToken}` }
         : {};
-
       const results = await Promise.all(
         toFetch.map(async (id) => {
           try {
-            const res = await axios.get(
-              `${API_URL}/media/${id}/like/status`,
-              { headers }
-            );
+            const res = await axios.get(`${API_URL}/media/${id}/like/status`, { headers });
             return { id, liked: res.data.liked, like_count: res.data.like_count };
           } catch {
             return { id, liked: false, like_count: 0 };
           }
         })
       );
-
       if (cancelled) return;
-
       toFetch.forEach(id => fetchedLikeRef.current.add(id));
-
       setLikeCounts(prev => {
         const next = { ...prev };
-        results.forEach(r => {
-          next[r.id] = { count: r.like_count, liked: r.liked };
-        });
+        results.forEach(r => { next[r.id] = { count: r.like_count, liked: r.liked }; });
         return next;
       });
     })();
-
     return () => { cancelled = true; };
   }, [mediaIdsKey, session?.accessToken]);
 
-  // ============ FETCH SHARE COUNT (sekali per ID) ============
+  // ============ FETCH SHARE COUNT ============
   useEffect(() => {
     const ids = mediaIdsKey ? mediaIdsKey.split('|') : [];
     const toFetch = ids.filter(id => !fetchedShareRef.current.has(id));
     if (toFetch.length === 0) return;
 
     let cancelled = false;
-
     (async () => {
       const results = await Promise.all(
         toFetch.map(async (id) => {
@@ -354,29 +344,24 @@ const grouped = useMemo(() => {
           }
         })
       );
-
       if (cancelled) return;
-
       toFetch.forEach(id => fetchedShareRef.current.add(id));
-
       setShareCounts(prev => {
         const next = { ...prev };
         results.forEach(r => { next[r.id] = r.count; });
         return next;
       });
     })();
-
     return () => { cancelled = true; };
   }, [mediaIdsKey]);
 
-  // ============ KOMPRESI GAMBAR ============
+  // ============ KOMPRESI ============
   const compressImage = async (file: File): Promise<File> => {
     if (!file.type.startsWith('image/')) return file;
     if (file.type === 'image/heic' || file.type === 'image/heif') return file;
     try {
       const options = { maxSizeMB: 2, maxWidthOrHeight: 1920, useWebWorker: true };
-      const compressed = await imageCompression(file, options);
-      return compressed;
+      return await imageCompression(file, options);
     } catch (e) {
       console.warn('Kompresi gagal, pakai file asli:', e);
       return file;
@@ -405,12 +390,8 @@ const grouped = useMemo(() => {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // ============ HANDLE UPLOAD MULTIPLE ============
   const handleMultipleUpload = async () => {
-    if (selectedFiles.length === 0) {
-      alert('Pilih file dulu!');
-      return;
-    }
+    if (selectedFiles.length === 0) { alert('Pilih file dulu!'); return; }
     if (!checkUploadPermission()) return;
 
     setUploading(true);
@@ -420,13 +401,8 @@ const grouped = useMemo(() => {
     for (let i = 0; i < selectedFiles.length; i++) {
       let fileItem = selectedFiles[i];
       if (activeTab !== 'model_3d' && fileItem.type.startsWith('image/') && fileItem.type !== 'image/heic' && fileItem.type !== 'image/heif') {
-        try {
-          fileItem = await compressImage(fileItem);
-        } catch (e) {
-          console.warn('Kompresi gagal, lanjut tanpa kompresi');
-        }
+        try { fileItem = await compressImage(fileItem); } catch {}
       }
-
       const formData = new FormData();
       formData.append('file', fileItem);
       formData.append('building_id', buildingId);
@@ -477,32 +453,22 @@ const grouped = useMemo(() => {
   };
 
   const handleDragEnter = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(true);
+    e.preventDefault(); e.stopPropagation(); setIsDragging(true);
   };
   const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
+    e.preventDefault(); e.stopPropagation(); setIsDragging(false);
   };
   const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+    e.preventDefault(); e.stopPropagation();
   };
   const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
+    e.preventDefault(); e.stopPropagation(); setIsDragging(false);
     const droppedFile = e.dataTransfer.files?.[0] || null;
     handleFileSelect(droppedFile);
   };
 
   const handleUpload = async () => {
-    if (!file) {
-      alert('Pilih file dulu!');
-      return;
-    }
+    if (!file) { alert('Pilih file dulu!'); return; }
     if (!checkUploadPermission()) return;
 
     const formData = new FormData();
@@ -528,10 +494,7 @@ const grouped = useMemo(() => {
           }
         },
       });
-      setFile(null);
-      setFilePreview(null);
-      setDescription('');
-      setTimestamp('');
+      setFile(null); setFilePreview(null); setDescription(''); setTimestamp('');
       setUploadProgress(0);
       await loadMedia();
       alert('✅ Upload berhasil!');
@@ -542,7 +505,6 @@ const grouped = useMemo(() => {
       setUploading(false);
     }
   };
-
 
   const openEditModal = (item: MediaItem) => {
     if (!canModifyMedia(item)) {
@@ -585,17 +547,150 @@ const grouped = useMemo(() => {
     }
   };
 
-    // ============ FULLSCREEN HANDLER ============
-  const handleMediaClick = async (e: React.MouseEvent) => {
-    const el = e.currentTarget as HTMLElement;
+  // ============ FULLSCREEN HANDLER (FOTO) ============
+  const handleMediaClick = async (e: React.MouseEvent, groupKey?: string) => {
+    e.stopPropagation();
+    const target = e.currentTarget as HTMLElement;
+    const wrapper = target.closest('[data-media-wrapper]') as HTMLElement | null;
+    const el = wrapper || target;
     try {
       if (document.fullscreenElement) {
         await document.exitFullscreen?.();
+        setFullscreenGroupKey(null);
       } else {
         await el.requestFullscreen?.();
+        if (groupKey) setFullscreenGroupKey(groupKey);
       }
     } catch (err) {
       console.warn('Fullscreen gagal:', err);
+    }
+  };
+
+  const exitFullscreen = async () => {
+    try { await document.exitFullscreen?.(); } catch {}
+    setFullscreenGroupKey(null);
+  };
+
+  useEffect(() => {
+    const onChange = () => {
+      if (!document.fullscreenElement) setFullscreenGroupKey(null);
+    };
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+
+  // Keyboard navigation saat fullscreen
+  useEffect(() => {
+    if (!fullscreenGroupKey) return;
+
+    const onKey = (e: KeyboardEvent) => {
+      const group = grouped.find((g) => g.key === fullscreenGroupKey);
+      if (e.key === 'Escape') return;
+      if (!group || group.items.length < 2) return;
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+
+      e.preventDefault();
+      setSlideIndexes((prev) => {
+        const cur = prev[fullscreenGroupKey] ?? 0;
+        const next =
+          e.key === 'ArrowRight'
+            ? (cur + 1) % group.items.length
+            : (cur - 1 + group.items.length) % group.items.length;
+        return { ...prev, [fullscreenGroupKey]: next };
+      });
+    };
+
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fullscreenGroupKey, grouped]);
+
+  // ============ AUTOPLAY/PAUSE VIDEO SAAT SCROLL ============
+  useEffect(() => {
+    if (activeTab !== 'video') return;
+
+    const io = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          const el = entry.target as HTMLVideoElement;
+          const id = el.dataset.mediaId;
+          if (!id) return;
+
+          if (entry.isIntersecting && entry.intersectionRatio >= 0.6) {
+            setActiveVideoId(id);
+            el.muted = mutedVideos[id] ?? true;
+            if (!pausedVideos[id]) el.play().catch(() => {});
+          } else {
+            el.pause();
+          }
+        });
+      },
+      { threshold: [0, 0.6, 1] }
+    );
+    ioRef.current = io;
+    videoRefsMap.current.forEach((el) => io.observe(el));
+
+    return () => {
+      io.disconnect();
+      ioRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, mediaIdsKey]);
+
+  const setVideoRef = useCallback(
+    (id: string) => (el: HTMLVideoElement | null) => {
+      if (el) {
+        el.dataset.mediaId = id;
+        videoRefsMap.current.set(id, el);
+        ioRef.current?.observe(el);
+      } else {
+        const prev = videoRefsMap.current.get(id);
+        if (prev) {
+          ioRef.current?.unobserve(prev);
+          videoRefsMap.current.delete(id);
+        }
+      }
+    },
+    []
+  );
+
+  const toggleVideoMute = (id: string) => {
+    setMutedVideos((prev) => {
+      const next = { ...prev, [id]: !(prev[id] ?? true) };
+      const el = videoRefsMap.current.get(id);
+      if (el) el.muted = next[id];
+      return next;
+    });
+  };
+
+  const toggleVideoPlay = (id: string) => {
+    const el = videoRefsMap.current.get(id);
+    if (!el) return;
+    setPausedVideos((prev) => {
+      const isPaused = prev[id] ?? false;
+      if (isPaused) el.play().catch(() => {});
+      else el.pause();
+      return { ...prev, [id]: !isPaused };
+    });
+  };
+
+  // ============ VIDEO FULLSCREEN ============
+  const toggleVideoFullscreen = async (id: string) => {
+    const el = videoRefsMap.current.get(id);
+    if (!el) return;
+    try {
+      if (document.fullscreenElement === el) {
+        await document.exitFullscreen();
+      } else {
+        const anyEl = el as any;
+        if (typeof el.requestFullscreen === 'function') {
+          await el.requestFullscreen();
+        } else if (typeof anyEl.webkitEnterFullscreen === 'function') {
+          // iOS Safari
+          anyEl.webkitEnterFullscreen();
+        }
+      }
+    } catch (err) {
+      console.warn('Video fullscreen gagal:', err);
     }
   };
 
@@ -613,23 +708,18 @@ const grouped = useMemo(() => {
     }
   }, [activeTab, media, selectedModelUrl]);
 
-  // ===== LIKE =====
   const toggleLike = async (mediaId: string) => {
     try {
       const headers = session?.accessToken ? { Authorization: `Bearer ${session.accessToken}` } : {};
       const res = await axios.post(`${API_URL}/media/${mediaId}/like`, {}, { headers });
       const { liked, like_count } = res.data;
-      setLikeCounts(prev => ({
-        ...prev,
-        [mediaId]: { count: like_count, liked }
-      }));
+      setLikeCounts(prev => ({ ...prev, [mediaId]: { count: like_count, liked } }));
     } catch (err: any) {
       console.error('Like error:', err);
       toast.error('Gagal like media');
     }
   };
 
-  // ===== SHARE =====
   const handleShare = async (mediaItem: MediaItem) => {
     try {
       const headers = session?.accessToken ? { Authorization: `Bearer ${session.accessToken}` } : {};
@@ -637,10 +727,7 @@ const grouped = useMemo(() => {
       const { shared, share_count } = res.data;
 
       if (shared) {
-        setShareCounts(prev => ({
-          ...prev,
-          [mediaItem._id]: share_count
-        }));
+        setShareCounts(prev => ({ ...prev, [mediaItem._id]: share_count }));
       }
 
       const shareData = {
@@ -663,9 +750,7 @@ const grouped = useMemo(() => {
         try {
           await navigator.clipboard.writeText(mediaItem.file_url);
           toast.success('🔗 Link disalin ke clipboard!');
-        } catch {
-          toast.error('Gagal copy link');
-        }
+        } catch { toast.error('Gagal copy link'); }
       }
     } catch (err: any) {
       console.error('Share error:', err);
@@ -673,8 +758,6 @@ const grouped = useMemo(() => {
     }
   };
 
-
-  // ============ EARLY RETURN ============
   if (!buildingId) return null;
 
   // ============ RENDER ============
@@ -744,7 +827,162 @@ const grouped = useMemo(() => {
             </p>
           )}
         </div>
+      ) : activeTab === 'video' ? (
+        /* ============ TIKTOK-STYLE VIDEO FEED ============ */
+        <div
+          ref={videoFeedRef}
+          className="relative h-[70vh] min-h-[420px] max-h-[640px] overflow-y-auto snap-y snap-mandatory rounded-xl bg-black [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {loading ? (
+            <div className="flex justify-center items-center h-full">
+              <div className="w-8 h-8 border-3 border-[#00c8ff] border-t-transparent rounded-full animate-spin"></div>
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="text-center py-8 text-gray-400 dark:text-gray-500 flex flex-col items-center justify-center h-full">
+              <i className="fa-regular fa-face-frown text-3xl block mb-2"></i>
+              <p className="text-sm">Belum ada video</p>
+              <p className="text-xs">Upload sekarang untuk berbagi momen!</p>
+            </div>
+          ) : (
+            filtered.map((item, idx) => {
+              const { name, isMe, role, deleted } = getUploaderLabel(item);
+              const isMuted = mutedVideos[item._id] ?? true;
+              const isPaused = pausedVideos[item._id] ?? false;
+
+              return (
+                <div
+                  key={item._id}
+                  className="snap-start snap-always relative w-full h-full flex items-center justify-center bg-black"
+                >
+                  <video
+                    ref={setVideoRef(item._id)}
+                    src={item.file_url}
+                    className="w-full h-full object-contain cursor-pointer"
+                    loop
+                    playsInline
+                    muted={isMuted}
+                    onClick={() => toggleVideoPlay(item._id)}
+                    onDoubleClick={() => toggleVideoFullscreen(item._id)}
+                  />
+
+                  {isPaused && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <div className="w-16 h-16 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center">
+                        <i className="fa-solid fa-play text-white text-2xl ml-1"></i>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ===== ACTION BUTTONS (kanan) ===== */}
+                  <div className="absolute right-3 bottom-24 flex flex-col items-center gap-4 z-10">
+                    <button type="button" onClick={() => toggleLike(item._id)} className="flex flex-col items-center">
+                      <div className={`w-11 h-11 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center ${
+                        likeCounts[item._id]?.liked ? 'text-red-500' : 'text-white'
+                      }`}>
+                        <i className={`fa-${likeCounts[item._id]?.liked ? 'solid' : 'regular'} fa-heart text-lg`}></i>
+                      </div>
+                      <span className="text-[10px] mt-1 text-white tabular-nums">
+                        {likeCounts[item._id]?.count || 0}
+                      </span>
+                    </button>
+
+                    <button type="button" onClick={() => handleShare(item)} className="flex flex-col items-center">
+                      <div className="w-11 h-11 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center text-white">
+                        <i className="fa-solid fa-share text-lg"></i>
+                      </div>
+                      <span className="text-[10px] mt-1 text-white tabular-nums">
+                        {shareCounts[item._id] || 0}
+                      </span>
+                    </button>
+
+                    <button type="button" onClick={() => toggleVideoMute(item._id)} className="flex flex-col items-center">
+                      <div className="w-11 h-11 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center text-white">
+                        <i className={`fa-solid ${isMuted ? 'fa-volume-xmark' : 'fa-volume-high'} text-lg`}></i>
+                      </div>
+                      <span className="text-[10px] mt-1 text-white">
+                        {isMuted ? 'Mute' : 'Sound'}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => toggleVideoFullscreen(item._id)}
+                      className="flex flex-col items-center"
+                    >
+                      <div className="w-11 h-11 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center text-white">
+                        <i className="fa-solid fa-expand text-lg"></i>
+                      </div>
+                      <span className="text-[10px] mt-1 text-white">Full</span>
+                    </button>
+
+                    {canModifyMedia(item) && (
+                      <button type="button" onClick={() => openEditModal(item)} className="flex flex-col items-center">
+                        <div className="w-11 h-11 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center text-white">
+                          <i className="fa-solid fa-pen text-base"></i>
+                        </div>
+                        <span className="text-[10px] mt-1 text-white">Edit</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* ===== USER INFO + DESKRIPSI ===== */}
+                  <div className="absolute left-3 right-20 bottom-4 z-10 text-white space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${
+                        deleted ? 'bg-gray-600 text-gray-300' :
+                        isMe ? 'bg-[#00c8ff] text-white' :
+                        'bg-white/20 backdrop-blur-sm text-white'
+                      }`}>
+                        {deleted ? '?' : name.charAt(0).toUpperCase()}
+                      </div>
+                      <span className="text-sm font-semibold">
+                        {deleted ? name : `@${name}`}
+                      </span>
+                      {isMe && !deleted && (
+                        <span className="text-[9px] bg-[#00c8ff] px-1.5 py-0.5 rounded-full font-medium">Anda</span>
+                      )}
+                      {role && !isMe && !deleted && (
+                        <span className="text-[9px] bg-white/20 px-1.5 py-0.5 rounded-full uppercase">{role}</span>
+                      )}
+                    </div>
+
+                    <p className="text-xs line-clamp-2 text-white/90">
+                      {item.description || 'Tanpa deskripsi'}
+                    </p>
+
+                    {item.mentions && item.mentions.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {item.mentions.slice(0, 3).map((m: any, i: number) => (
+                          <span key={i} className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/20 backdrop-blur-sm">
+                            <i className="fa-solid fa-at text-[7px] mr-0.5"></i>
+                            {m.username || m}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    <p className="text-[10px] text-white/70 flex items-center gap-1">
+                      <i className="fa-regular fa-calendar"></i>
+                      {formatDateID(item.timestamp || item.created_at, true)}
+                    </p>
+                  </div>
+
+                  <div className="absolute top-3 right-3 z-10 bg-black/40 backdrop-blur-sm text-white text-[10px] px-2.5 py-1 rounded-full">
+                    {idx + 1} / {filtered.length}
+                  </div>
+
+                  {idx === 0 && filtered.length > 1 && (
+                    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 text-white/70 text-[10px] animate-bounce flex flex-col items-center pointer-events-none">
+                      <i className="fa-solid fa-chevron-down"></i>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
       ) : (
+        /* ============ PHOTO & MAINTENANCE FEED ============ */
         <div className="media-feed-container space-y-4 pb-2">
           {loading ? (
             <div className="flex justify-center py-8">
@@ -753,67 +991,149 @@ const grouped = useMemo(() => {
           ) : filtered.length === 0 ? (
             <div className="text-center py-8 text-gray-400 dark:text-gray-500">
               <i className="fa-regular fa-face-frown text-3xl block mb-2"></i>
-              <p className="text-sm">Belum ada {activeTab === 'photo' ? 'foto' : activeTab === 'video' ? 'video' : 'riwayat perbaikan'}</p>
+              <p className="text-sm">Belum ada {activeTab === 'photo' ? 'foto' : 'riwayat perbaikan'}</p>
               <p className="text-xs">Upload sekarang untuk berbagi momen!</p>
             </div>
           ) : (
-              grouped.map((group, groupIndex) => {
-                    const isAlbum = group.items.length > 1;
-                    const slideIdx = slideIndexes[group.key] ?? 0;
-                    const item = group.items[slideIdx];
+            grouped.map((group, groupIndex) => {
+              const isAlbum = group.items.length > 1;
+              const slideIdx = slideIndexes[group.key] ?? 0;
+              const item = group.items[slideIdx];
 
-                    const isVideo = item.file_type === 'videos' || item.file_type === 'video';
-                    const isImage = item.file_type === 'images' || item.file_type === 'image';
-                    const isDocument = !isVideo && !isImage;
+              const isVideo = item.file_type === 'videos' || item.file_type === 'video';
+              const isImage = item.file_type === 'images' || item.file_type === 'image';
+              const isDocument = !isVideo && !isImage;
+              const isFullscreen = fullscreenGroupKey === group.key;
 
-                    const goPrev = (e: React.MouseEvent) => {
-                      e.stopPropagation();
-                      setSlideIndexes(prev => ({
-                        ...prev,
-                        [group.key]: slideIdx === 0 ? group.items.length - 1 : slideIdx - 1,
-                      }));
-                    };
-                    const goNext = (e: React.MouseEvent) => {
-                      e.stopPropagation();
-                      setSlideIndexes(prev => ({
-                        ...prev,
-                        [group.key]: (slideIdx + 1) % group.items.length,
-                      }));
-                    };
+              const goPrev = (e: React.MouseEvent) => {
+                e.stopPropagation();
+                setSlideIndexes(prev => ({
+                  ...prev,
+                  [group.key]: slideIdx === 0 ? group.items.length - 1 : slideIdx - 1,
+                }));
+              };
+              const goNext = (e: React.MouseEvent) => {
+                e.stopPropagation();
+                setSlideIndexes(prev => ({
+                  ...prev,
+                  [group.key]: (slideIdx + 1) % group.items.length,
+                }));
+              };
+
               return (
                 <div
-                  key={item._id}
+                  key={group.key}
                   className="media-feed-item media-card group"
                   style={{ animationDelay: `${groupIndex * 0.05}s` }}
                 >
-                  <div className="relative bg-black/5 dark:bg-black/20">
+                  {/* ===== WRAPPER INI YANG DI-FULLSCREEN ===== */}
+                  <div
+                    data-media-wrapper
+                    className={`relative bg-black/5 dark:bg-black/20 ${
+                      isFullscreen
+                        ? 'w-full h-full flex items-center justify-center bg-black'
+                        : ''
+                    }`}
+                  >
                     {isImage && (
                       <img
                         src={item.file_url}
                         alt={item.description || 'Media'}
-                        className="w-full max-h-[500px] object-contain cursor-pointer bg-gray-50 dark:bg-gray-900 transition-transform duration-300 group-hover:scale-[1.01]"
-                        onClick={handleMediaClick}
+                        className={`object-contain cursor-pointer bg-gray-50 dark:bg-gray-900 transition-transform duration-300 ${
+                          isFullscreen
+                            ? 'max-h-screen max-w-full'
+                            : 'w-full max-h-[500px] group-hover:scale-[1.01]'
+                        }`}
+                        onClick={(e) => handleMediaClick(e, group.key)}
+                        onTouchStart={(e) => {
+                          if (!document.fullscreenElement) return;
+                          touchStartXRef.current = e.touches[0].clientX;
+                          touchDeltaXRef.current = 0;
+                        }}
+                        onTouchMove={(e) => {
+                          if (touchStartXRef.current == null) return;
+                          touchDeltaXRef.current = e.touches[0].clientX - touchStartXRef.current;
+                        }}
+                        onTouchEnd={() => {
+                          if (touchStartXRef.current == null) return;
+                          const dx = touchDeltaXRef.current;
+                          touchStartXRef.current = null;
+                          touchDeltaXRef.current = 0;
+                          if (Math.abs(dx) < 50 || group.items.length < 2) return;
+                          setSlideIndexes((prev) => {
+                            const cur = prev[group.key] ?? 0;
+                            const next = dx < 0
+                              ? (cur + 1) % group.items.length
+                              : (cur - 1 + group.items.length) % group.items.length;
+                            return { ...prev, [group.key]: next };
+                          });
+                        }}
                         loading="lazy"
                       />
                     )}
+
                     {isVideo && (
                       <video
                         src={item.file_url}
-                        className="w-full max-h-[500px] object-contain rounded-t-2xl cursor-pointer bg-black"
+                        className={`object-contain cursor-pointer bg-black ${
+                          isFullscreen
+                            ? 'max-h-screen max-w-full'
+                            : 'w-full max-h-[500px] rounded-t-2xl'
+                        }`}
                         controls
                         playsInline
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleMediaClick(e);
+                          handleMediaClick(e, group.key);
                         }}
                       />
                     )}
+
                     {isDocument && (
-                      <div className="w-full h-48 flex flex-col items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-400 cursor-pointer" onClick={() => window.open(item.file_url, '_blank')}>
+                      <div
+                        className="w-full h-48 flex flex-col items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-400 cursor-pointer"
+                        onClick={() => window.open(item.file_url, '_blank')}
+                      >
                         <i className="fa-solid fa-file-pdf text-5xl mb-2"></i>
                         <span className="text-sm font-medium">{item.file_type || 'Dokumen'}</span>
                         <span className="text-xs">Klik untuk buka</span>
                       </div>
+                    )}
+
+                    {/* ===== FULLSCREEN INDICATOR ===== */}
+                    {isFullscreen && (
+                      <>
+                        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 bg-black/60 backdrop-blur-md text-white text-[10px] px-3 py-1.5 rounded-full pointer-events-none flex items-center gap-2 shadow-lg">
+                          {isAlbum && (
+                            <>
+                              <kbd className="px-1.5 py-0.5 rounded bg-white/20 font-mono text-[10px]">←</kbd>
+                              <kbd className="px-1.5 py-0.5 rounded bg-white/20 font-mono text-[10px]">→</kbd>
+                              <span className="opacity-90">geser</span>
+                              <span className="w-1 h-1 rounded-full bg-white/40"></span>
+                            </>
+                          )}
+                          <kbd className="px-1.5 py-0.5 rounded bg-white/20 font-mono text-[10px]">ESC</kbd>
+                          <span className="opacity-90">keluar</span>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            exitFullscreen();
+                          }}
+                          className="absolute top-3 right-3 z-40 w-9 h-9 rounded-full bg-black/60 backdrop-blur-md text-white flex items-center justify-center hover:bg-black/80 shadow-lg"
+                          title="Keluar fullscreen"
+                        >
+                          <i className="fa-solid fa-xmark text-sm"></i>
+                        </button>
+
+                        {isAlbum && (
+                          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40 bg-black/50 backdrop-blur-md text-white text-xs px-3 py-1 rounded-full tabular-nums">
+                            {slideIdx + 1} / {group.items.length}
+                          </div>
+                        )}
+                      </>
                     )}
 
                     <div className="absolute top-3 left-3 z-10 bg-black/50 backdrop-blur-sm text-white text-[10px] px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-lg">
@@ -822,13 +1142,15 @@ const grouped = useMemo(() => {
                       {item.media_type === 'maintenance' && '🔧 Perbaikan'}
                     </div>
 
-                    <div className="absolute bottom-3 right-3 z-10 bg-black/40 backdrop-blur-sm text-white text-[10px] px-2.5 py-1 rounded-full">
-                      {isAlbum
-                        ? `${slideIdx + 1} / ${group.items.length}`
-                        : `${groupIndex + 1} / ${grouped.length}`}
-                    </div>
+                    {!isFullscreen && (
+                      <div className="absolute bottom-3 right-3 z-10 bg-black/40 backdrop-blur-sm text-white text-[10px] px-2.5 py-1 rounded-full">
+                        {isAlbum
+                          ? `${slideIdx + 1} / ${group.items.length}`
+                          : `${groupIndex + 1} / ${grouped.length}`}
+                      </div>
+                    )}
 
-                    {/* ===== SLIDER CONTROLS (khusus album) ===== */}
+                    {/* ===== SLIDER CONTROLS (album) ===== */}
                     {isAlbum && (
                       <>
                         <button
@@ -848,7 +1170,6 @@ const grouped = useMemo(() => {
                           <i className="fa-solid fa-chevron-right text-xs"></i>
                         </button>
 
-                        {/* Dots indicator */}
                         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex gap-1.5 bg-black/40 backdrop-blur-sm px-2 py-1 rounded-full">
                           {group.items.map((_, i) => (
                             <button
@@ -867,86 +1188,67 @@ const grouped = useMemo(() => {
                       </>
                     )}
 
-                      {canModifyMedia(item) && (
-                        <div className="absolute top-3 right-3 z-10 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button
-                            type="button"
-                            onClick={() => openEditModal(item)}
-                            className="w-8 h-8 rounded-full bg-blue-500/85 text-white flex items-center justify-center hover:bg-blue-600 shadow-lg"
-                            title="Edit"
-                          >
-                            <i className="fa-solid fa-pen text-xs"></i>
-                          </button>
-                          {/* Tombol Hapus dipindah ke Profil → Upload Saya */}
-                        </div>
-                      )}
+                    {canModifyMedia(item) && !isFullscreen && (
+                      <div className="absolute top-3 right-3 z-10 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(item)}
+                          className="w-8 h-8 rounded-full bg-blue-500/85 text-white flex items-center justify-center hover:bg-blue-600 shadow-lg"
+                          title="Edit"
+                        >
+                          <i className="fa-solid fa-pen text-xs"></i>
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <div className="p-3 space-y-1.5">
-                    {/* ===== UPLOADER ===== */}
                     {(() => {
                       const { name, isMe, role, deleted } = getUploaderLabel(item);
                       return (
                         <div className="flex items-center gap-1.5 text-[11px]">
-                          <div
-                            className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold ${
-                              deleted
-                                ? 'bg-gray-200 dark:bg-gray-700 text-gray-400'
-                                : isMe
-                                ? 'bg-[#00c8ff] text-white'
-                                : 'bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200'
-                            }`}
-                          >
+                          <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold ${
+                            deleted ? 'bg-gray-200 dark:bg-gray-700 text-gray-400' :
+                            isMe ? 'bg-[#00c8ff] text-white' :
+                            'bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200'
+                          }`}>
                             {deleted ? '?' : name.charAt(0).toUpperCase()}
                           </div>
-                          <span
-                            className={`font-semibold ${
-                              deleted
-                                ? 'text-gray-400 dark:text-gray-500 italic'
-                                : isMe
-                                ? 'text-[#00c8ff]'
-                                : 'text-gray-700 dark:text-gray-200'
-                            }`}
-                          >
+                          <span className={`font-semibold ${
+                            deleted ? 'text-gray-400 dark:text-gray-500 italic' :
+                            isMe ? 'text-[#00c8ff]' :
+                            'text-gray-700 dark:text-gray-200'
+                          }`}>
                             {deleted ? name : `@${name}`}
                           </span>
                           {isMe && !deleted && (
-                            <span className="text-[9px] bg-[#00c8ff]/10 text-[#00c8ff] px-1.5 py-0.5 rounded-full font-medium">
-                              Anda
-                            </span>
+                            <span className="text-[9px] bg-[#00c8ff]/10 text-[#00c8ff] px-1.5 py-0.5 rounded-full font-medium">Anda</span>
                           )}
                           {role && !isMe && !deleted && (
-                            <span className="text-[9px] bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 px-1.5 py-0.5 rounded-full uppercase">
-                              {role}
-                            </span>
+                            <span className="text-[9px] bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 px-1.5 py-0.5 rounded-full uppercase">{role}</span>
                           )}
                         </div>
                       );
                     })()}
 
-                      <p className="text-sm font-medium text-gray-800 dark:text-white line-clamp-2">
-                        {item.description || 'Tanpa deskripsi'}
-                      </p>
+                    <p className="text-sm font-medium text-gray-800 dark:text-white line-clamp-2">
+                      {item.description || 'Tanpa deskripsi'}
+                    </p>
 
-                      {/* ===== MENTIONS (chip) ===== */}
-                      {item.mentions && item.mentions.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {item.mentions.slice(0, 3).map((m: any, i: number) => (
-                            <span
-                              key={i}
-                              className="text-[9px] px-1.5 py-0.5 rounded-full bg-[#00c8ff]/10 text-[#00c8ff] font-medium border border-[#00c8ff]/20"
-                            >
-                              <i className="fa-solid fa-at text-[7px] mr-0.5"></i>
-                              {m.username || m}
-                            </span>
-                          ))}
-                          {item.mentions.length > 3 && (
-                            <span className="text-[9px] text-gray-400">
-                              +{item.mentions.length - 3}
-                            </span>
-                          )}
-                        </div>
-                      )}
+                    {item.mentions && item.mentions.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {item.mentions.slice(0, 3).map((m: any, i: number) => (
+                          <span key={i} className="text-[9px] px-1.5 py-0.5 rounded-full bg-[#00c8ff]/10 text-[#00c8ff] font-medium border border-[#00c8ff]/20">
+                            <i className="fa-solid fa-at text-[7px] mr-0.5"></i>
+                            {m.username || m}
+                          </span>
+                        ))}
+                        {item.mentions.length > 3 && (
+                          <span className="text-[9px] text-gray-400">+{item.mentions.length - 3}</span>
+                        )}
+                      </div>
+                    )}
+
                     <div className="flex items-center gap-3 text-[10px] text-gray-500 dark:text-gray-400">
                       <span className="flex items-center gap-1">
                         <i className="fa-regular fa-calendar"></i>
@@ -967,10 +1269,7 @@ const grouped = useMemo(() => {
                         <i className={`fa-${likeCounts[item._id]?.liked ? 'solid' : 'regular'} fa-heart text-base group-hover:scale-110 transition-transform`}></i>
                         <span className="tabular-nums">{likeCounts[item._id]?.count || 0}</span>
                       </button>
-                      <button
-                        className="social-btn ml-auto"
-                        onClick={() => handleShare(item)}
-                      >
+                      <button className="social-btn ml-auto" onClick={() => handleShare(item)}>
                         <i className="fa-regular fa-share-from-square text-base"></i>
                         <span className="tabular-nums">{shareCounts[item._id] || 0}</span>
                       </button>
@@ -983,16 +1282,14 @@ const grouped = useMemo(() => {
         </div>
       )}
 
-      {/* ===== INDIKATOR WILAYAH (general) ===== */}
+      {/* ===== INDIKATOR WILAYAH ===== */}
       {session && (isPolygonRole || roleNorm === 'reporter') && (
         <div className={`text-xs p-2 rounded-lg border ${
           canUploadHere
             ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800 text-green-700 dark:text-green-300'
             : 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800 text-yellow-700 dark:text-yellow-300'
         }`}>
-          <i className={`fa-solid ${
-            canUploadHere ? 'fa-check-circle' : 'fa-exclamation-triangle'
-          } mr-1`}></i>
+          <i className={`fa-solid ${canUploadHere ? 'fa-check-circle' : 'fa-exclamation-triangle'} mr-1`}></i>
           {canUploadHere
             ? (isPolygonRole
                 ? '✅ Bangunan ini di dalam wilayah kerja Anda'
@@ -1030,48 +1327,26 @@ const grouped = useMemo(() => {
             token={session.accessToken as string}
             canUpload={canUploadHere}
             outsideReason={outsideReason}
-            onSuccess={() => {
-              loadMedia();
-              onMediaChange?.();
-            }}
+            onSuccess={() => { loadMedia(); onMediaChange?.(); }}
           />
         </div>
       )}
 
       {previewMedia && (
-        <div
-          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
-          onClick={() => setPreviewMedia(null)}
-        >
-          <div
-            className="max-w-4xl w-full max-h-[90vh] bg-black rounded-lg overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setPreviewMedia(null)}>
+          <div className="max-w-4xl w-full max-h-[90vh] bg-black rounded-lg overflow-hidden" onClick={(e) => e.stopPropagation()}>
             {previewMedia.file_type === 'videos' && (
-              <video
-                src={previewMedia.file_url}
-                controls
-                autoPlay
-                className="w-full h-auto max-h-[80vh]"
-              />
+              <video src={previewMedia.file_url} controls autoPlay className="w-full h-auto max-h-[80vh]" />
             )}
             {previewMedia.file_type === 'images' && (
-              <img
-                src={previewMedia.file_url}
-                alt={previewMedia.description || 'Media'}
-                className="w-full h-auto max-h-[80vh] object-contain"
-              />
+              <img src={previewMedia.file_url} alt={previewMedia.description || 'Media'} className="w-full h-auto max-h-[80vh] object-contain" />
             )}
             <div className="p-4 text-white">
               <p>{previewMedia.description || 'Tanpa deskripsi'}</p>
               <p className="text-sm text-gray-400">
                 {new Date(previewMedia.timestamp).toLocaleDateString('id-ID')}
               </p>
-              <button
-                type="button"
-                className="mt-2 px-4 py-2 bg-red-500 rounded hover:bg-red-600 transition"
-                onClick={() => setPreviewMedia(null)}
-              >
+              <button type="button" className="mt-2 px-4 py-2 bg-red-500 rounded hover:bg-red-600 transition" onClick={() => setPreviewMedia(null)}>
                 Tutup
               </button>
             </div>
@@ -1080,29 +1355,18 @@ const grouped = useMemo(() => {
       )}
 
       {editingMedia && (
-        <div
-          className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
-          onClick={() => !saving && setEditingMedia(null)}
-        >
-          <div
-            className="bg-white dark:bg-[#1a1a2e] rounded-2xl shadow-2xl w-full max-w-md p-5 space-y-4"
-            onClick={(e) => e.stopPropagation()}
-          >
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={() => !saving && setEditingMedia(null)}>
+          <div className="bg-white dark:bg-[#1a1a2e] rounded-2xl shadow-2xl w-full max-w-md p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-gray-800 dark:text-white flex items-center gap-2">
                 <i className="fa-solid fa-pen text-[#00c8ff]"></i>
                 Edit Media
               </h3>
-              <button
-                type="button"
-                onClick={() => !saving && setEditingMedia(null)}
-                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-              >
+              <button type="button" onClick={() => !saving && setEditingMedia(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
                 <i className="fa-solid fa-xmark"></i>
               </button>
             </div>
 
-            {/* Preview thumbnail */}
             <div className="rounded-lg overflow-hidden bg-black/5 dark:bg-black/20 max-h-40 flex items-center justify-center">
               {editingMedia.file_type === 'videos' ? (
                 <video src={editingMedia.file_url} className="max-h-40" muted />
@@ -1113,11 +1377,8 @@ const grouped = useMemo(() => {
               )}
             </div>
 
-            {/* Media Type */}
             <div>
-              <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">
-                Kategori
-              </label>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">Kategori</label>
               <select
                 value={editMediaType}
                 onChange={(e) => setEditMediaType(e.target.value as any)}
@@ -1130,11 +1391,8 @@ const grouped = useMemo(() => {
               </select>
             </div>
 
-            {/* Deskripsi */}
             <div>
-              <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">
-                Deskripsi
-              </label>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">Deskripsi</label>
               <textarea
                 value={editDescription}
                 onChange={(e) => setEditDescription(e.target.value)}
@@ -1144,12 +1402,8 @@ const grouped = useMemo(() => {
               />
             </div>
 
-
-            {/* Timestamp */}
             <div>
-              <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">
-                Tanggal & Waktu
-              </label>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">Tanggal & Waktu</label>
               <input
                 type="datetime-local"
                 value={editTimestamp}
@@ -1158,7 +1412,6 @@ const grouped = useMemo(() => {
               />
             </div>
 
-            {/* Actions */}
             <div className="flex gap-2 pt-2">
               <button
                 type="button"
@@ -1180,7 +1433,6 @@ const grouped = useMemo(() => {
           </div>
         </div>
       )}
-
     </div>
   );
 }

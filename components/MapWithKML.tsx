@@ -45,6 +45,8 @@ import {
 import 'leaflet.heat';
 import MusimTanamPanel from '@/components/MusimTanamPanel';
 import {  MUSIM_TANAM_STATUS } from '@/hooks/useMusimTanam';
+import RainfallHistory from '@/components/RainfallHistory';
+
 
 declare module 'leaflet' {
   function heat(latlngs: any[], options?: any): any;
@@ -103,12 +105,13 @@ export const CATEGORY_CONFIG: Record<string, any> = {
  };
 
  // ============ FLOW HELPERS ============
+// Konversi Debit (m³/s) ke Durasi Animasi (Detik) yang Realistis
+// Range: 4s (debit kecil) → 12s (debit sangat kecil), slow & natural
 function debitToDuration(debit: number): number {
   if (debit <= 0) return 0;
-  if (debit < 2)  return 2.0;
-  if (debit < 10) return 1.2;
-  if (debit < 30) return 0.7;
-  return 0.4;
+  // Semakin besar debit → animasi makin cepat, tapi tidak ekstrem
+  const duration = 12 / Math.pow(Math.max(debit, 0.1), 0.30);
+  return Math.max(4, Math.min(12, Number(duration.toFixed(2))));
 }
 
 function debitToColor(debit: number): string {
@@ -419,48 +422,44 @@ useEffect(() => {
 
 
 useEffect(() => {
+  document.getElementById('flow-anim-style')?.remove();
+
   const style = document.createElement('style');
   style.id = 'flow-anim-style';
   style.textContent = `
-    /* Keyframes */
-    @keyframes flow-dash {
-      to { stroke-dashoffset: -80; }
-    }
-    @keyframes flow-ripple {
-      to { stroke-dashoffset: -160; }
-    }
-    @keyframes flow-glow {
-      0%, 100% { opacity: 0.25; }
-      50%      { opacity: 0.55; }
+    @keyframes flow-liquid {
+      0% { stroke-dashoffset: 400; }
+      100% { stroke-dashoffset: 0; }
     }
 
-    /* !important WAJIB — override inline style Leaflet */
-    .flow-water-main {
-      animation: flow-dash var(--fd, 1.5s) linear infinite !important;
+    @keyframes flow-surface {
+      0% { stroke-dashoffset: 250; opacity: 0; }
+      20% { opacity: 0.7; }
+      80% { opacity: 0.7; }
+      100% { stroke-dashoffset: 0; opacity: 0; }
     }
-    .flow-water-ripple {
-      stroke: rgba(255, 255, 255, 0.9) !important;
-      animation: flow-ripple calc(var(--fd, 1.5s) * 0.55) linear infinite !important;
+
+    /* Arus utama: Kena efek distorsi cairan (Turbulence) */
+    .flow-water-mid {
+      animation: flow-liquid var(--fd, 2.5s) linear infinite !important;
+      filter: url(#water-turbulence); 
+    }
+
+    /* Buih/Permukaan: Lebih cepat, memudar secara alami, dan menyatu (screen) */
+    .flow-water-surface {
+      animation: flow-surface calc(var(--fd, 2.5s) * 0.7) ease-in-out infinite !important;
+      mix-blend-mode: screen; 
+      filter: url(#water-turbulence);
       pointer-events: none !important;
     }
-    .flow-water-glow {
-      animation: flow-glow calc(var(--fd, 1.5s) * 2) ease-in-out infinite !important;
-      pointer-events: none !important;
-    }
+
     .flow-paused {
       animation-play-state: paused !important;
     }
-
-    @media (prefers-reduced-motion: reduce) {
-      .flow-water-main,
-      .flow-water-ripple,
-      .flow-water-glow { animation: none !important; }
-    }
   `;
   document.head.appendChild(style);
-  return () => document.getElementById('flow-anim-style')?.remove();
+  return () => { document.getElementById('flow-anim-style')?.remove(); };
 }, []);
-
 
 
 
@@ -507,44 +506,7 @@ function debitToDuration(debit: number): number {
   return Math.max(0.3, Math.min(3.0, Number(duration.toFixed(2))));
 }
 
-useEffect(() => {
-  const style = document.createElement('style');
-  style.id = 'flow-anim-style';
-  style.textContent = `
-    /* Keyframe Aliran Air Utama */
-    @keyframes flow-dash {
-      0% { stroke-dashoffset: 240; }
-      100% { stroke-dashoffset: 0; }
-    }
 
-    /* Keyframe Riak/Buih Permukaan (Lebih Cepat) */
-    @keyframes flow-ripple {
-      0% { stroke-dashoffset: 180; transform: translateY(0); }
-      50% { transform: translateY(-0.5px); }
-      100% { stroke-dashoffset: 0; transform: translateY(0); }
-    }
-
-    /* Layer Utama Air */
-    .flow-water-main {
-      animation: flow-dash var(--fd, 1.2s) linear infinite !important;
-    }
-
-    /* Layer Riak/Buih Air di Tengah Saluran */
-    .flow-water-ripple {
-      stroke: #ffffff !important;
-      animation: flow-ripple calc(var(--fd, 1.2s) * 0.6) linear infinite !important;
-      pointer-events: none !important;
-      opacity: 0.8;
-    }
-
-    /* Efek Glowing / Air Jernih */
-    .flow-water-glow {
-      filter: drop-shadow(0px 0px 3px #38bdf8);
-    }
-  `;
-  document.head.appendChild(style);
-  return () => { document.getElementById('flow-anim-style')?.remove(); };
-}, []);
 
   // ===== FUNGSI KATEGORISASI =====
   const categorizeFeature = (name: string, description: string = '', type: string = 'point') => {
@@ -1413,18 +1375,25 @@ useEffect(() => {
 
         // 🔥 EFEK GLOW UNTUK SALURAN
           if (isSaluran) {
-            // 🚫 DAFTAR SALURAN MATI / TIDAK TERTIMPA AIR
-            const deadCanalNames = [
-              'AS Saluran Sekunder Cilangkara',
-              'AS Saluran Pegadungan',
-              'AS Saluran Sekunder Jati',
-              'As Saluran Sekunder Jati', // Variasi penulisan 'As'
+            const deadCanalPatterns: RegExp[] = [
+              /saluran\s*sekunder\s*cilangkara/i,
+              /saluran\s*pegadungan/i,
+              /saluran\s*sekunder\s*jati/i,
+
+              // B.Sa. 8-10 — Sampora
+              /^b\.?\s*sa\.?\s*8\s*[-–—]\s*10/i,
+
+              // B.Pp. — Pasir Pogor (match harus ada "pasir pogor" ATAU diawali "B.Pp")
+              /pasir\s*pogor/i,
+              /^b\.?\s*pp\.?\s/i,   // diawali "B.Pp " (pakai spasi di akhir biar gak match "Bppp")
+
+              // B.Ts — Tegal Sapi
+              /tegal\s*sapi/i,
+              /^b\.?\s*ts\.?\s/i,
             ];
 
-            // Pengecekan nama saluran (case-insensitive agar lebih aman)
-            const isDeadCanal = deadCanalNames.some(
-              (deadName) => deadName.toLowerCase() === (line.name || '').toLowerCase()
-            );
+          const rawName = (line.name || '').trim();
+          const isDeadCanal = deadCanalPatterns.some((re) => re.test(rawName));
 
             const rawFlow = showFlowAnimation ? saluranFlowMap[line.name] : null;
 
@@ -1459,101 +1428,90 @@ useEffect(() => {
               return;
             }
 
-        // ===== CASE 2: SALURAN AKTIF & TEST MODE (4 Layer Air) =====
         const defaultFlow = {
           color: '#00E5FF',
           width: 3,
-          duration: 1.5,
+          duration: 8,
           debit: 0,
           from: 'Pintu Air Primary',
           tanggal: 'Test Mode',
           jam: '00:00',
         };
 
-        const flow = rawFlow ? { ...defaultFlow, ...rawFlow } : defaultFlow;
+      const flow = rawFlow ? { ...defaultFlow, ...rawFlow } : defaultFlow;
 
-        // 1. GLOW
-        const glow = L.polyline(line.path, {
-          color: flow.color,
-          weight: flow.width + 10,
-          opacity: 0.3,
-          lineJoin: 'round',
-          lineCap: 'round',
-          className: 'flow-water-glow',
-          interactive: false,
+      // 1. BED / DASAR AIR
+      const bed = L.polyline(line.path, {
+        color: '#0369A1',
+        weight: flow.width + 2,
+        opacity: 0.8,
+        lineJoin: 'round',
+        lineCap: 'round',
+        interactive: false,
+      });
+
+      // 2. MID CURRENT / ARUS TENGAH
+      const mid = L.polyline(line.path, {
+        color: '#38BDF8',
+        weight: flow.width - 1,
+        opacity: 0.9,
+        lineJoin: 'round',
+        lineCap: 'round',
+        dashArray: '20, 15, 45, 10, 60, 20',
+        className: 'flow-water-mid',
+      });
+
+      // 3. SURFACE / BUIH PERMUKAAN
+      const surface = L.polyline(line.path, {
+        color: '#E0F2FE',
+        weight: Math.max(1, flow.width - 4),
+        opacity: 0.9,
+        lineJoin: 'round',
+        lineCap: 'round',
+        dashArray: '2, 50, 4, 80, 1, 40',
+        className: 'flow-water-surface',
+        interactive: false,
+      });
+
+      // Set CSS var duration ke elemen SVG setelah layer ditambahkan
+      [mid, surface].forEach((layer) => {
+        layer.on('add', () => {
+          const el = (layer as any)._path as SVGPathElement | undefined;
+          if (el) {
+            el.style.setProperty('--fd', `${flow.duration}s`);
+            el.dataset.fd = String(flow.duration);
+          }
         });
+      });
 
-        // 2. BASE
-        const base = L.polyline(line.path, {
-          color: flow.color,
-          weight: flow.width + 2,
-          opacity: 0.75,
-          lineJoin: 'round',
-          lineCap: 'round',
-          interactive: false,
-        });
-
-        // 3. MAIN
-        const main = L.polyline(line.path, {
-          color: '#BAE6FD',
-          weight: flow.width,
-          opacity: 0.95,
-          lineJoin: 'round',
-          lineCap: 'round',
-          dashArray: '28 14',
-          className: 'flow-water-main',
-        });
-
-        // 4. RIPPLE
-        const ripple = L.polyline(line.path, {
-          color: '#FFFFFF',
-          weight: Math.max(2, flow.width - 1),
-          opacity: 0.9,
-          lineJoin: 'round',
-          lineCap: 'round',
-          dashArray: '5 120',
-          className: 'flow-water-ripple',
-          interactive: false,
-        });
-
-        // Set CSS var duration & dataset
-        [glow, main, ripple].forEach((layer) => {
-          layer.on('add', () => {
-            const el = (layer as any)._path as SVGPathElement | undefined;
-            if (el) {
-              el.style.setProperty('--fd', `${flow.duration}s`);
-              el.dataset.fd = String(flow.duration);
-            }
-          });
-        });
-
-        // Popup & Click Interaksi
-        main.bindPopup(`
-          <div style="font-family:Inter;min-width:220px;">
-            <h4 style="margin:0 0 6px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Saluran'}</h4>
-            <p style="margin:0 0 6px 0;font-size:11px;color:#666;">💧 Dialiri dari <b>${flow.from}</b></p>
-            <div style="padding:10px;background:#f0f9ff;border-radius:8px;border:1px solid #bae6fd;">
-              <div style="font-size:18px;font-weight:700;color:#0369a1;font-family:monospace;">
-                ${flow.debit.toFixed(2)} m³/d
-              </div>
-              <div style="font-size:10px;color:#666;margin-top:4px;">
-                Update: ${flow.tanggal} · ${flow.jam}
-              </div>
+      // Popup & Click Interaksi
+      mid.bindPopup(`
+        <div style="font-family:Inter;min-width:220px;">
+          <h4 style="margin:0 0 6px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Saluran'}</h4>
+          <p style="margin:0 0 6px 0;font-size:11px;color:#666;">💧 Dialiri dari <b>${flow.from}</b></p>
+          <div style="padding:10px;background:#f0f9ff;border-radius:8px;border:1px solid #bae6fd;">
+            <div style="font-size:18px;font-weight:700;color:#0369a1;font-family:monospace;">
+              ${flow.debit.toFixed(2)} m³/d
             </div>
-            ${line.length ? `<p style="margin:8px 0 0 0;font-size:12px;color:#00E5FF;font-weight:bold;">📏 Panjang: ${formatLength(line.length)}</p>` : ''}
+            <div style="font-size:10px;color:#666;margin-top:4px;">
+              Update: ${flow.tanggal} · ${flow.jam}
+            </div>
           </div>
-        `);
+          ${line.length ? `<p style="margin:8px 0 0 0;font-size:12px;color:#00E5FF;font-weight:bold;">📏 Panjang: ${formatLength(line.length)}</p>` : ''}
+        </div>
+      `);
 
-        main.on('click', () => {
-          setSelectedSaluran({ name: line.name || 'Saluran', length: line.length || 0, flow });
-          if (!isPanelOpen) setIsPanelOpen(true);
-        });
+      mid.on('click', () => {
+        setSelectedSaluran({ name: line.name || 'Saluran', length: line.length || 0, flow });
+        if (!isPanelOpen) setIsPanelOpen(true);
+      });
 
-        const group = L.layerGroup([glow, base, ripple, main]);
-        if (!lineGroups['SALURAN_DEFAULT']) lineGroups['SALURAN_DEFAULT'] = L.layerGroup();
-        lineGroups['SALURAN_DEFAULT'].addLayer(group);
+      // Urutan addLayer: bed paling bawah, surface paling atas
+      const group = L.layerGroup([bed, mid, surface]);
+      if (!lineGroups['SALURAN_DEFAULT']) lineGroups['SALURAN_DEFAULT'] = L.layerGroup();
+      lineGroups['SALURAN_DEFAULT'].addLayer(group);
 
-        return;
+      return;
       }
       // KEJURON
       if (isKejuron) {
@@ -2018,8 +1976,22 @@ if (showWind && envData?.windSpeed) {
       <div className="relative h-full w-full bg-gray-50 dark:bg-[#0a0a1a]">
         {/* MAP CONTAINER */}
         <div ref={containerRef} className="absolute inset-0 h-full w-full" />
-
-        {/* SEARCH BAR & HASHTAG FILTER */}
+        <svg style={{ position: 'absolute', width: 0, height: 0 }} aria-hidden="true">
+          <defs>
+            <filter id="water-turbulence" x="-20%" y="-20%" width="140%" height="140%">
+              {/* <!-- Membuat tekstur riak air (noise) --> */}
+              <feTurbulence type="fractalNoise" baseFrequency="0.02 0.08" numOctaves="2" result="noise" />
+              {/* <!-- Mendistorsi garis Leaflet mengikuti tekstur noise di atas --> */}
+              <feDisplacementMap in="SourceGraphic" in2="noise" scale="6" xChannelSelector="R" yChannelSelector="G" />
+              {/* <!-- Melembutkan hasil agar terlihat seperti cairan --> */}
+              <feGaussianBlur stdDeviation="0.8" result="blur" />
+              <feMerge>
+                <feMergeNode in="blur" />
+              </feMerge>
+            </filter>
+          </defs>
+        </svg>
+                {/* SEARCH BAR & HASHTAG FILTER */}
        {/* SEARCH BAR & HASHTAG FILTER */}
 <div className={`absolute top-4 w-[90%] max-w-lg 
   ${isPanelOpen ? 'left-4 translate-x-0 z-[990]' : 'left-1/2 -translate-x-1/2 z-[1000]'}`}>
