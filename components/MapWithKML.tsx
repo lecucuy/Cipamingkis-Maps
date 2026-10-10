@@ -46,6 +46,9 @@ import 'leaflet.heat';
 import MusimTanamPanel from '@/components/MusimTanamPanel';
 import {  MUSIM_TANAM_STATUS } from '@/hooks/useMusimTanam';
 import RainfallHistory from '@/components/RainfallHistory';
+import RABProgressPanel from './progress/RABProgressPanel';
+import RABUploadModal from '@/components/progress/RABUploadModal';
+import AddWorkModal from '@/components/progress/AddWorkModal';
 
 
 declare module 'leaflet' {
@@ -196,28 +199,62 @@ export default function MapWithKML() {
   };
   const [showMusimTanam, setShowMusimTanam] = useState(false);
   const router = useRouter();
-// 🔥 Fetch musim tanam langsung (public, tanpa butuh login)
-const [musimTanamByPolygon, setMusimTanamByPolygon] = useState<Record<string, any>>({});
+  // 🔥 Fetch musim tanam langsung (public, tanpa butuh login)
+  const [musimTanamByPolygon, setMusimTanamByPolygon] = useState<Record<string, any>>({});
+  const [addWorkMode, setAddWorkMode] = useState(false);
+  const [pendingLocation, setPendingLocation] = useState<{ lat: number; lon: number } | null>(null);
+  const [showAddWorkModal, setShowAddWorkModal] = useState(false);
+  const [showRABModal, setShowRABModal] = useState(false);
+  const [progressRefreshKey, setProgressRefreshKey] = useState(0);
 
-const fetchMusimTanam = useCallback(async () => {
-  try {
-    const headers = session?.accessToken
-      ? { Authorization: `Bearer ${session.accessToken}` }
-      : {};
+  useEffect(() => {
+  const map = mapRef.current;
+  if (!map || !mapReady) return;
 
-    const res = await axios.get(`${API_URL}/musim-tanam/laporan`, { headers });
-    const reports = res.data?.reports || [];
-    const map: Record<string, any> = {};
-    reports.forEach((r: any) => {
-      map[r.polygon_id] = r;
-    });
-    console.log('[MusimTanam] ✅ fetched:', reports.length, 'reports');
-    console.log('[MusimTanam] keys:', Object.keys(map));
-    setMusimTanamByPolygon(map);
-  } catch (err: any) {
-    console.error('[MusimTanam] ❌ fetch error:', err.response?.status, err.message);
-  }
-}, [session?.accessToken]);
+  const onClick = (e: any) => {
+    if (!addWorkMode) return;
+    setPendingLocation({ lat: e.latlng.lat, lon: e.latlng.lng });
+    setShowAddWorkModal(true);
+    setAddWorkMode(false);
+  };
+
+  map.on('click', onClick);
+
+  // Cursor crosshair saat mode aktif
+  const container = map.getContainer();
+  container.style.cursor = addWorkMode ? 'crosshair' : '';
+
+  return () => {
+    map.off('click', onClick);
+    container.style.cursor = '';
+  };
+}, [mapReady, addWorkMode]);
+
+
+  const fetchMusimTanam = useCallback(async () => {
+    try {
+      const headers = session?.accessToken
+        ? { Authorization: `Bearer ${session.accessToken}` }
+        : {};
+
+      const res = await axios.get(`${API_URL}/musim-tanam/laporan`, { headers });
+      const reports = res.data?.reports || [];
+      const map: Record<string, any> = {};
+      reports.forEach((r: any) => {
+        map[r.polygon_id] = r;
+      });
+      console.log('[MusimTanam] ✅ fetched:', reports.length, 'reports');
+      console.log('[MusimTanam] keys:', Object.keys(map));
+      setMusimTanamByPolygon(map);
+    } catch (err: any) {
+      console.error('[MusimTanam] ❌ fetch error:', err.response?.status, err.message);
+    }
+  }, [session?.accessToken]);
+
+  // ===== DETEKSI STASIUN CURAH HUJAN =====
+const isRainfallStation = useCallback((station: any): boolean => {
+  return !!station?.name && /curah\s*hujan/i.test(station.name);
+}, []);
 
 useEffect(() => {
   fetchMusimTanam();
@@ -1266,10 +1303,177 @@ useEffect(() => {
         // ===== POLYGONS =====
     const polygonGroups: Record<string, L.LayerGroup> = {};
     polygons.forEach((poly: any) => {
+        
       if (!poly?.path || !Array.isArray(poly.path) || poly.path.length === 0) return;
       const category = poly.category || 'default';
       const cfg = CATEGORY_CONFIG[category] || CATEGORY_CONFIG['default'];
       let color = cfg.color, fillColor = cfg.color, weight = 2, dashArray = 'none', fillOpacity = 0.3;
+      // ===== 🔥 MERCU BENDUNG: WATERFALL ANIMATION =====
+      const isMercu = /mercu\s*bendung|bendung\s*mercu/i.test(poly.name || '');
+      if (isMercu) {
+        // Inject style sekali saja
+        if (!document.getElementById('mercu-waterfall-style')) {
+          const style = document.createElement('style');
+          style.id = 'mercu-waterfall-style';
+          style.textContent = `
+            @keyframes mercu-flow {
+              from { stroke-dashoffset: 220; }
+              to   { stroke-dashoffset: 0; }
+            }
+            @keyframes mercu-pulse {
+              0%, 100% { fill-opacity: 0.30; }
+              50%      { fill-opacity: 0.75; }
+            }
+            @keyframes mercu-cascade {
+              0%   { stroke-dashoffset: 28; opacity: 0.15; }
+              40%  { opacity: 1; }
+              100% { stroke-dashoffset: 0; opacity: 0.15; }
+            }
+            @keyframes mercu-spray {
+              0%   { r: 2; opacity: 0.9; }
+              100% { r: 8; opacity: 0; }
+            }
+            .mercu-crest-flow {
+              animation: mercu-flow 1.6s linear infinite;
+              filter: url(#water-turbulence);
+            }
+            .mercu-foam-pulse {
+              animation: mercu-pulse 2.2s ease-in-out infinite;
+            }
+            .mercu-cascade-line {
+              animation: mercu-cascade 1.1s linear infinite;
+              filter: url(#water-turbulence);
+            }
+            .mercu-spray {
+              animation: mercu-spray 1.4s ease-out infinite;
+            }
+          `;
+          document.head.appendChild(style);
+        }
+
+            // ---- 1. Kolam olak / badan air (dasar) ----
+            const mercuPool = L.polygon(poly.path, {
+              color: '#0369A1',
+              fillColor: '#0EA5E9',
+              fillOpacity: 0.55,
+              weight: 2,
+            });
+
+            // ---- 2. Foam putih berdenyut (buih) ----
+            const mercuFoam = L.polygon(poly.path, {
+              color: '#FFFFFF',
+              fillColor: '#E0F2FE',
+              fillOpacity: 0.5,
+              weight: 1,
+              className: 'mercu-foam-pulse',
+              interactive: false,
+            });
+
+            // ---- 3. Crest line dengan aliran turbulensi ----
+            const mercuCrest = L.polygon(poly.path, {
+              color: '#F0F9FF',
+              weight: 4,
+              fillColor: 'transparent',
+              fillOpacity: 0,
+              dashArray: '6, 10',
+              className: 'mercu-crest-flow',
+              interactive: false,
+            });
+
+            // ---- 4. Cascade: garis air jatuh tegak lurus crest ----
+            const cascadeLayers: L.Polyline[] = [];
+            const path = poly.path as number[][];
+            const p0 = path[0];
+            const pMid = path[Math.floor(path.length / 2)];
+            const axisLat = pMid[0] - p0[0];
+            const axisLng = pMid[1] - p0[1];
+            const axisLen = Math.hypot(axisLat, axisLng) || 1;
+            // Perpendicular (rotasi 90°) — arah jatuh air
+            const perpLat = -axisLng / axisLen;
+            const perpLng =  axisLat / axisLen;
+            const dropLen = 0.00022; // ~22 m (jarak visual jatuh)
+
+            const numDrops = 7;
+            for (let i = 1; i <= numDrops; i++) {
+              const t = i / (numDrops + 1);
+              const baseLat = p0[0] + axisLat * (t * 2); // interpolasi 0..1
+              const baseLng = p0[1] + axisLng * (t * 2);
+              const endLat  = baseLat + perpLat * dropLen;
+              const endLng  = baseLng + perpLng * dropLen;
+
+              const cascade = L.polyline(
+                [[baseLat, baseLng], [endLat, endLng]],
+                {
+                  color: '#BAE6FD',
+                  weight: 3,
+                  opacity: 0.85,
+                  dashArray: '2, 6',
+                  className: 'mercu-cascade-line',
+                  interactive: false,
+                }
+              );
+              cascadeLayers.push(cascade);
+            }
+
+            // ---- 5. Spray / percikan di titik jatuh ----
+            const sprayGroup = L.layerGroup();
+            for (let i = 1; i <= numDrops; i++) {
+              const t = i / (numDrops + 1);
+              const baseLat = p0[0] + axisLat * (t * 2) + perpLat * dropLen;
+              const baseLng = p0[1] + axisLng * (t * 2) + perpLng * dropLen;
+              const spray = L.circleMarker([baseLat, baseLng], {
+                radius: 4,
+                color: '#E0F2FE',
+                fillColor: '#FFFFFF',
+                fillOpacity: 0.7,
+                weight: 1,
+                className: 'mercu-spray',
+                interactive: false,
+              });
+              sprayGroup.addLayer(spray);
+            }
+
+            // ---- Popup ----
+            const popupContent = `
+              <div style="font-family:Inter;min-width:210px;">
+                <h4 style="margin:0 0 6px 0;font-size:14px;color:#1a1a2e;">${poly.name || 'Mercu Bendung'}</h4>
+                <div style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;background:#e0f2fe;border-radius:8px;border:1px solid #7dd3fc;">
+                  <span style="font-size:14px;">💧</span>
+                  <span style="font-size:11px;font-weight:700;color:#0284C7;letter-spacing:0.3px;">AIR TERJUN / MERCU</span>
+                </div>
+                <p style="margin:8px 0 0 0;font-size:10px;color:#666;line-height:1.4;">
+                  Aliran air jatuh dari puncak bendung menuju kolam olak.
+                </p>
+              </div>
+            `;
+            mercuPool.bindPopup(popupContent);
+            mercuPool.on('click', () => {
+              setSelectedFeature({
+                name: poly.name,
+                category: 'MERCU_BENDUNG',
+                description: poly.description,
+                tags: poly.tags || [],
+                lat: (p0[0] + pMid[0]) / 2,
+                lon: (p0[1] + pMid[1]) / 2,
+              });
+              if (!isPanelOpen) setIsPanelOpen(true);
+            });
+
+            // ---- Gabung jadi satu layer group ----
+            const mercuGroup = L.layerGroup([
+              mercuPool,
+              mercuFoam,
+              mercuCrest,
+              ...cascadeLayers,
+              sprayGroup,
+            ]);
+
+            if (!polygonGroups['default']) polygonGroups['default'] = L.layerGroup();
+            polygonGroups['default'].addLayer(mercuGroup);
+            return; // skip rendering normal
+          }
+          // ===== END MERCU =====
+      
       // ✅ SESUDAH — pakai warna musim tanam kalau ada
       if (category === 'LUASAN_SAWAH') {
         const mt = musimTanamByPolygon[poly.name];
@@ -2266,16 +2470,40 @@ if (showWind && envData?.windSpeed) {
                 onClose={() => setSelectedFeature(null)}
               />
             )}
- 
-           {/* BuildingMedia - Hanya untuk non-reporter */}
+
+            {/* 🔥 RAB PROGRESS — muncul untuk non-reporter kalau bangunan punya RAB aktif */}
+          {selectedFeature && (
+            <RABProgressPanel
+              buildingId={selectedFeature.name}
+              buildingName={selectedFeature.name}
+              onRefresh={() => setProgressRefreshKey((k) => k + 1)}
+            />
+          )}
+          
+            {/* BuildingMedia ATAU RainfallHistory - Hanya untuk non-reporter */}
+            {/* ===== STASIUN CURAH HUJAN → PUBLIC, tidak butuh login ===== */}
+            {activeStation && isRainfallStation(activeStation) && (
+              <div className="mt-2 border-t border-gray-200 dark:border-[#2a2a4e] pt-4">
+                <RainfallHistory
+                  buildingId={activeStation.name}
+                  buildingName={activeStation.name}
+                  buildingLat={activeStation.lat}
+                  buildingLon={activeStation.lon}
+                  token={session?.accessToken as string | undefined}
+                />
+              </div>
+            )}
+
+            {/* ===== BUILDING MEDIA → hanya non-reporter & sudah login ===== */}
             {activeStation &&
-         normalizeRole(session?.user?.role) !== 'reporter' && (
+            !isRainfallStation(activeStation) &&
+            normalizeRole(session?.user?.role) !== 'reporter' && (
               <div className="mt-2 border-t border-gray-200 dark:border-[#2a2a4e] pt-4">
                 <BuildingMedia
                   buildingId={activeStation.name}
                   buildingName={activeStation.name}
-                  buildingLat={activeStation.lat}       
-                  buildingLon={activeStation.lon}  
+                  buildingLat={activeStation.lat}
+                  buildingLon={activeStation.lon}
                   onMediaChange={() => loadBuildingMedia(activeStation.name)}
                   userRole={session?.user?.role}
                   userPolygon={session?.user?.polygon}
@@ -2473,6 +2701,40 @@ if (showWind && envData?.windSpeed) {
             </button>
           )}
 
+
+            {/* 🔥 TOMBOL RAB & TAMBAH PEKERJAAN — HANYA JURU/SUPERVISOR */}
+            {(normalizeRole(session?.user?.role) === 'juru' || normalizeRole(session?.user?.role) === 'supervisor') && (
+              <>
+                {/* Upload RAB */}
+                <button
+                  onClick={() => setShowRABModal(true)}
+                  className="w-full py-2 rounded-lg bg-emerald-500 text-white text-xs font-semibold hover:bg-emerald-600 transition flex items-center justify-center gap-2"
+                >
+                  <i className="fa-solid fa-file-excel"></i>
+                  Upload RAB Excel
+                </button>
+
+                {/* Tambah Pekerjaan (Klik Peta) */}
+                <button
+                  onClick={() => {
+                    if (!isPanelOpen) setIsPanelOpen(true);
+                    setAddWorkMode(!addWorkMode);
+                    if (!addWorkMode) {
+                      toast('Klik titik pada peta untuk menandai lokasi pekerjaan', { icon: '📍', duration: 4000 });
+                    }
+                  }}
+                  className={`w-full py-2 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-2 ${
+                    addWorkMode
+                      ? 'bg-red-500 text-white hover:bg-red-600'
+                      : 'bg-[#00c8ff] text-white hover:bg-[#00c8ff]/90'
+                  }`}
+                >
+                  <i className={`fa-solid ${addWorkMode ? 'fa-xmark' : 'fa-plus-circle'}`}></i>
+                  {addWorkMode ? 'Batal Tambah' : 'Tambah Pekerjaan di Peta'}
+                </button>
+              </>
+            )} 
+
             {/* WEATHER */}
             <div className="bg-gradient-to-br from-blue-50/50 to-cyan-50/50 dark:from-blue-900/20 dark:to-cyan-900/20 rounded-xl border border-blue-200 dark:border-blue-800 p-4">
               <div className="flex items-center justify-between mb-2">
@@ -2519,6 +2781,24 @@ if (showWind && envData?.windSpeed) {
         </button>
       </div>
       
+            {/* ===== MODAL RAB & ADD WORK ===== */}
+<RABUploadModal
+  open={showRABModal}
+  onClose={() => setShowRABModal(false)}
+  buildingId={activeStation?.name}
+  buildingName={activeStation?.name}
+  onSuccess={() => setProgressRefreshKey(k => k + 1)}
+/>
+
+<AddWorkModal
+  open={showAddWorkModal}
+  onClose={() => { setShowAddWorkModal(false); setPendingLocation(null); }}
+  buildingId={activeStation?.name}
+  buildingName={activeStation?.name}
+  prefilledLocation={pendingLocation}
+  onSuccess={() => setProgressRefreshKey(k => k + 1)}
+/>
+
         {/* FOOTER */}
     <footer className="flex-shrink-0 w-full border-t border-gray-200 dark:border-[#2a2a4e] bg-white dark:bg-[#0f0f23] px-4 py-2">
       <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-gray-500 dark:text-gray-400">

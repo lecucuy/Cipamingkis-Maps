@@ -1,7 +1,7 @@
 // components/ReporterRainfallInput.tsx
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import axios from 'axios';
 import { useSession } from 'next-auth/react';
 
@@ -15,6 +15,66 @@ interface ReporterRainfallInputProps {
 // Role yang boleh input curah hujan
 const ALLOWED_ROLES = ['reporter', 'pob', 'juru', 'supervisor', 'tpop'];
 
+type WaterStatus = 'normal' | 'siaga' | 'banjir' | 'kering';
+
+// ============================================================
+// THRESHOLD (mm) — sesuaikan dengan standar lapangan kamu
+// ============================================================
+const THRESHOLD = {
+  normal_max: 10,   // 0.1 – 10 mm → Normal (aman)
+  siaga_max: 30,    // 10.1 – 30 mm → Siaga
+  // > 30 mm → Banjir
+  // == 0 mm → Kering
+};
+
+// ============================================================
+// METADATA STATUS (untuk warna, ikon, posisi di bar)
+// Urutan keparahan: normal → siaga → banjir → kering
+// ============================================================
+const STATUS_META: Record<
+  WaterStatus,
+  { label: string; icon: string; color: string; position: number; desc: string }
+> = {
+  normal: {
+    label: 'Normal',
+    icon: 'fa-water',
+    color: '#22C55E',
+    position: 0,
+    desc: 'Kondisi aman',
+  },
+  siaga: {
+    label: 'Siaga',
+    icon: 'fa-triangle-exclamation',
+    color: '#EAB308',
+    position: 33,
+    desc: 'Perlu waspada',
+  },
+  banjir: {
+    label: 'Banjir',
+    icon: 'fa-house-flood-water',
+    color: '#F97316',
+    position: 66,
+    desc: 'Debit tinggi',
+  },
+  kering: {
+    label: 'Kering',
+    icon: 'fa-ban',
+    color: '#EF4444',
+    position: 100,
+    desc: 'Tidak ada air',
+  },
+};
+
+// ============================================================
+// AUTO-DERIVE STATUS dari nilai curah hujan
+// ============================================================
+function getStatusFromRainfall(mm: number): WaterStatus {
+  if (mm <= 0) return 'kering';
+  if (mm <= THRESHOLD.normal_max) return 'normal';
+  if (mm <= THRESHOLD.siaga_max) return 'siaga';
+  return 'banjir';
+}
+
 export default function ReporterRainfallInput({
   buildingId,
   buildingName,
@@ -22,9 +82,7 @@ export default function ReporterRainfallInput({
   onClose,
 }: ReporterRainfallInputProps) {
   const { data: session } = useSession();
-  const [rainfall, setRainfall] = useState<number>(0);
-  const [waterLevel, setWaterLevel] = useState<number | null>(null);
-  const [status, setStatus] = useState<'normal' | 'kering' | 'banjir' | 'siaga'>('normal');
+  const [rainfall, setRainfall] = useState<string>('0');
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -33,6 +91,19 @@ export default function ReporterRainfallInput({
   const API_URL = process.env.NEXT_PUBLIC_API_URL;
   const roleNorm = (session?.user?.role || '').toLowerCase();
   const canInput = ALLOWED_ROLES.includes(roleNorm);
+
+  // ===== DERIVED STATE (auto, tidak perlu useState) =====
+  const rainfallNum = useMemo(() => {
+    const n = parseFloat(rainfall);
+    return isFinite(n) && n >= 0 ? n : 0;
+  }, [rainfall]);
+
+  const status: WaterStatus = useMemo(
+    () => getStatusFromRainfall(rainfallNum),
+    [rainfallNum]
+  );
+
+  const currentMeta = STATUS_META[status];
 
   if (!canInput) {
     return (
@@ -52,10 +123,9 @@ export default function ReporterRainfallInput({
         `${API_URL}/reporter/rainfall`,
         {
           building_id: buildingId,
-          rainfall_mm: rainfall,
-          water_level: waterLevel,
-          status: status,
-          notes: notes,
+          rainfall_mm: rainfallNum,
+          status,            // ← status otomatis dari nilai rainfall
+          notes,
         },
         {
           headers: {
@@ -65,8 +135,8 @@ export default function ReporterRainfallInput({
       );
       setSuccess(true);
       setTimeout(() => {
-        if (onSuccess) onSuccess();
-        if (onClose) onClose();
+        onSuccess?.();
+        onClose?.();
       }, 1500);
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Gagal menyimpan data');
@@ -83,9 +153,7 @@ export default function ReporterRainfallInput({
             <i className="fa-solid fa-cloud-rain text-blue-500"></i>
             Input Curah Hujan
           </h4>
-          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-            {buildingName}
-          </p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{buildingName}</p>
         </div>
         {onClose && (
           <button
@@ -105,86 +173,113 @@ export default function ReporterRainfallInput({
         </div>
       ) : (
         <>
-          {/* SLIDER CURAH HUJAN */}
+          {/* ===== INPUT CURAH HUJAN ===== */}
           <div className="mb-4">
-            <div className="flex items-center justify-between mb-1">
-              <label className="text-xs font-medium text-gray-700 dark:text-gray-300">
-                🌧️ Curah Hujan
-              </label>
-              <span className="text-sm font-bold text-blue-600 dark:text-blue-400">
-                {rainfall} mm
-              </span>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              step="0.5"
-              value={rainfall}
-              onChange={(e) => setRainfall(parseFloat(e.target.value))}
-              className="w-full h-2 bg-gray-200 dark:bg-[#2a2a4e] rounded-lg appearance-none cursor-pointer"
-              style={{
-                accentColor: rainfall === 0 ? '#EF4444' : '#00c8ff',
-              }}
-            />
-            <div className="flex justify-between text-[9px] text-gray-400 mt-0.5">
-              <span>0 (Kering)</span>
-              <span>50</span>
-              <span>100+ mm</span>
-            </div>
-          </div>
-
-          {/* STATUS AIR */}
-          <div className="mb-3">
             <label className="text-xs font-medium text-gray-700 dark:text-gray-300 block mb-1.5">
-              💧 Status Air
+              🌧️ Curah Hujan
             </label>
-            <div className="grid grid-cols-4 gap-1.5">
-              {[
-                { value: 'normal', label: 'Normal', icon: 'fa-water', color: 'blue' },
-                { value: 'kering', label: 'Kering', icon: 'fa-ban', color: 'red' },
-                { value: 'siaga', label: 'Siaga', icon: 'fa-triangle-exclamation', color: 'yellow' },
-                { value: 'banjir', label: 'Banjir', icon: 'fa-water', color: 'orange' },
-              ].map((opt) => (
-                <button
-                  key={opt.value}
-                  onClick={() => setStatus(opt.value as any)}
-                  className={`px-2 py-1.5 rounded-lg text-[9px] font-medium transition-all border ${
-                    status === opt.value
-                      ? `bg-${opt.color}-500 text-white border-${opt.color}-500 shadow-lg shadow-${opt.color}-500/30`
-                      : `bg-gray-100 dark:bg-[#2a2a4e] text-gray-600 dark:text-gray-400 border-transparent hover:bg-gray-200 dark:hover:bg-[#3a3a5e]`
-                  }`}
-                >
-                  <i className={`fa-solid ${opt.icon} mr-0.5`}></i>
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* WATER LEVEL */}
-          <div className="mb-3">
-            <label className="text-xs font-medium text-gray-700 dark:text-gray-300 block mb-1">
-              📏 Tinggi Muka Air (opsional)
-            </label>
-            <div className="flex items-center gap-3">
+            <div className="relative">
               <input
                 type="number"
                 min="0"
-                max="10"
-                step="0.01"
-                value={waterLevel ?? ''}
-                onChange={(e) =>
-                  setWaterLevel(e.target.value ? parseFloat(e.target.value) : null)
-                }
-                placeholder="cm"
-                className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-[#0a0a1a] border border-gray-200 dark:border-[#2a2a4e] text-sm focus:outline-none focus:border-[#00c8ff] focus:ring-2 focus:ring-[#00c8ff]/30"
+                max="500"
+                step="0.5"
+                inputMode="decimal"
+                value={rainfall}
+                onChange={(e) => setRainfall(e.target.value)}
+                onBlur={() => {
+                  const v = parseFloat(rainfall);
+                  if (!isFinite(v) || v < 0) setRainfall('0');
+                }}
+                placeholder="0"
+                className="w-full px-3 py-2.5 pr-12 rounded-lg bg-gray-50 dark:bg-[#0a0a1a] border border-gray-200 dark:border-[#2a2a4e] text-sm font-semibold text-[#1a1a2e] dark:text-white focus:outline-none focus:border-[#00c8ff] focus:ring-2 focus:ring-[#00c8ff]/30"
               />
-              <span className="text-xs text-gray-400 font-medium">cm</span>
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-gray-400">
+                mm
+              </span>
+            </div>
+            <p className="text-[10px] text-gray-400 mt-1">
+              Masukkan angka curah hujan (contoh: 12.5). Status akan ditentukan otomatis.
+            </p>
+          </div>
+
+          {/* ===== BAR AUTO-SYNC DENGAN NILAI ===== */}
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-medium text-gray-700 dark:text-gray-300">
+                💧 Status Air (otomatis)
+              </label>
+              <span
+                className="text-[11px] font-bold px-2 py-0.5 rounded-full text-white transition-colors duration-300"
+                style={{ backgroundColor: currentMeta.color }}
+              >
+                <i className={`fa-solid ${currentMeta.icon} mr-1`}></i>
+                {currentMeta.label}
+              </span>
+            </div>
+
+            {/* Bar gradient hijau → merah */}
+            <div className="relative h-3 rounded-full overflow-visible mb-2">
+              <div
+                className="absolute inset-0 rounded-full"
+                style={{
+                  background:
+                    'linear-gradient(to right, #22C55E 0%, #84CC16 25%, #EAB308 50%, #F97316 75%, #EF4444 100%)',
+                }}
+              />
+              {/* Marker auto geser */}
+              <div
+                className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-white shadow-lg border-2 transition-all duration-500 ease-out"
+                style={{
+                  left: `${currentMeta.position}%`,
+                  borderColor: currentMeta.color,
+                  boxShadow: `0 0 0 3px ${currentMeta.color}33, 0 2px 6px rgba(0,0,0,0.25)`,
+                }}
+              >
+                <div
+                  className="absolute inset-0 rounded-full m-0.5 transition-colors duration-300"
+                  style={{ backgroundColor: currentMeta.color }}
+                />
+              </div>
+            </div>
+
+            {/* Keterangan status + threshold */}
+            <div className="flex items-center justify-between text-[9px] text-gray-400 mt-1">
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-[#22C55E]"></span>
+                Normal ≤ {THRESHOLD.normal_max}mm
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-[#EAB308]"></span>
+                Siaga ≤ {THRESHOLD.siaga_max}mm
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-[#F97316]"></span>
+                Banjir &gt; {THRESHOLD.siaga_max}mm
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-[#EF4444]"></span>
+                Kering = 0mm
+              </span>
+            </div>
+
+            {/* Info singkat status saat ini */}
+            <div
+              className="mt-2 px-3 py-2 rounded-lg text-[11px] transition-colors duration-300 flex items-center gap-2"
+              style={{
+                backgroundColor: `${currentMeta.color}1a`,
+                borderLeft: `3px solid ${currentMeta.color}`,
+                color: currentMeta.color,
+              }}
+            >
+              <i className={`fa-solid ${currentMeta.icon}`}></i>
+              <span className="font-medium">
+                {currentMeta.desc} — input {rainfallNum} mm
+              </span>
             </div>
           </div>
 
-          {/* CATATAN */}
+          {/* ===== CATATAN ===== */}
           <div className="mb-4">
             <label className="text-xs font-medium text-gray-700 dark:text-gray-300 block mb-1">
               📝 Catatan (opsional)
@@ -220,16 +315,6 @@ export default function ReporterRainfallInput({
               </>
             )}
           </button>
-
-          {rainfall === 0 && (
-            <div className="mt-3 text-xs text-orange-600 dark:text-orange-400 flex items-center gap-1.5 bg-orange-50 dark:bg-orange-900/20 p-2 rounded-lg border border-orange-200 dark:border-orange-800">
-              <i className="fa-solid fa-circle-exclamation"></i>
-              <span>
-                Status "Kering" dipilih karena curah hujan 0 mm. Pastikan kondisi
-                lapangan memang tidak ada air.
-              </span>
-            </div>
-          )}
         </>
       )}
     </div>

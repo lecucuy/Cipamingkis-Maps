@@ -122,6 +122,8 @@ export default function BuildingMedia({
   const [fullscreenGroupKey, setFullscreenGroupKey] = useState<string | null>(null);
   const touchStartXRef = useRef<number | null>(null);
   const touchDeltaXRef = useRef<number>(0);
+  const [modelFullscreen, setModelFullscreen] = useState(false);
+
 
   // ===== TIKTOK-STYLE VIDEO FEED =====
   const videoFeedRef = useRef<HTMLDivElement | null>(null);
@@ -246,6 +248,16 @@ export default function BuildingMedia({
     }
     return groups;
   }, [filtered, activeTab]);
+
+  // ESC untuk keluar dari model 3D fullscreen
+    useEffect(() => {
+      if (!modelFullscreen) return;
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') setModelFullscreen(false);
+      };
+      window.addEventListener('keydown', onKey);
+      return () => window.removeEventListener('keydown', onKey);
+    }, [modelFullscreen]);
 
   const outsideReason: string | null =
     roleNorm === 'admin' ? null :
