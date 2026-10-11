@@ -353,7 +353,7 @@ export default function RABUploadModal({
               </button>
               <button
                 onClick={handleCommit}
-                disabled={busy || !preview.ok}
+                disabled={busy || !preview?.ok}
                 className="flex-1 py-2 text-xs rounded-lg bg-emerald-500 text-white font-semibold hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
               >
                 {busy ? (
