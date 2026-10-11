@@ -1,130 +1,183 @@
 // hooks/useLatestDebits.ts
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import axios from 'axios';
+import { useEffect, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
+import axios from 'axios';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
-export interface LatestDebit {
+export interface DebitRow {
+  jam: string;
+  tma: string;
+  limpasan: string;
+  intakeKiri: string;
+  intakeKanan: string;
+  jumlah: string;
+  kaliCipamingkis: string;
+  hujan: string;
+  keterangan: string;
+}
+
+export interface DebitFlowInfo {
   buildingId: string;
+  debit: number;
   tanggal: string;
   jam: string;
-  debit: number;
-  limpasan: number;
-  intakeKiri: number;
-  intakeKanan: number;
-  jumlah: number;
+  row: DebitRow;
 }
 
-function toNumber(v: any): number {
-  if (v === null || v === undefined) return 0;
-  const s = String(v).trim().replace(/\s/g, '').replace(',', '.');
-  const n = parseFloat(s);
-  return isNaN(n) ? 0 : n;
+// ============================================================
+// 🔥 Cek row punya minimal 1 field berisi
+// ============================================================
+const isValidRow = (r: any): boolean =>
+  ['tma', 'limpasan', 'intakeKiri', 'intakeKanan', 'jumlah',
+   'kaliCipamingkis', 'hujan', 'keterangan']
+    .some((k) => {
+      const v = r?.[k];
+      if (v === null || v === undefined) return false;
+      const s = String(v).trim();
+      return s !== '' && s !== '-';
+    });
+
+// ============================================================
+// 🔥 Hitung debit dari 1 row
+// ============================================================
+function computeDebit(lastRow: DebitRow): number {
+  const num = (v: any) => {
+    if (v === null || v === undefined) return 0;
+    const n = parseFloat(String(v).replace(',', '.').replace(/[^\d.-]/g, ''));
+    return isNaN(n) ? 0 : n;
+  };
+  const jumlah = num(lastRow.jumlah);
+  if (jumlah > 0) return jumlah;
+  return num(lastRow.limpasan) + num(lastRow.intakeKiri) + num(lastRow.intakeKanan);
 }
 
-export function useLatestDebits(buildingIds: string[]) {
-  const { data: session } = useSession();
-  const [debits, setDebits] = useState<Record<string, LatestDebit>>({});
+// ============================================================
+// MAIN HOOK
+// ============================================================
+export function useLatestDebits(
+  buildingIds: string[],
+  options?: { pollMs?: number }
+) {
+  const { data: session, status } = useSession();
+  const token = session?.accessToken;
 
-  const idsKey = buildingIds.slice().sort().join('|');
+  const [latestDebits, setLatestDebits] = useState<Record<string, DebitFlowInfo>>({});
 
-  const fetchAll = useCallback(async () => {
-    if (!session?.accessToken) {
-      console.warn('[useLatestDebits] Skip — belum login');
+  const buildingIdsRef = useRef<string[]>([]);
+  buildingIdsRef.current = buildingIds;
+
+  const fetchAll = async () => {
+    const ids = buildingIdsRef.current;
+    if (!ids || ids.length === 0) {
+      setLatestDebits({});
       return;
     }
-    if (!idsKey) {
-      console.warn('[useLatestDebits] Skip — gak ada bendung');
-      return;
-    }
 
-    const ids = idsKey.split('|');
-    console.log('[useLatestDebits] Fetching bendung:', ids);
+    // ⛔ Skip kalau belum login / session masih loading
+    if (status === 'loading') return;
+    const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
 
-    const results: Record<string, LatestDebit> = {};
 
-    await Promise.all(
-      ids.map(async (id) => {
-        try {
-          const res = await axios.get(
-            `${API_URL}/buildings/${encodeURIComponent(id)}/debit`,
-            {
-              params: { limit: 5 },
-              headers: { Authorization: `Bearer ${session.accessToken}` },
-            }
-          );
+    const result: Record<string, DebitFlowInfo> = {};
 
-          const reports = res.data?.reports || [];
-          console.log(`[useLatestDebits] ${id} → ${reports.length} reports`);
+    // 🔥 Fetch serial biar log-nya kebaca (ganti ke Promise.all kalau banyak banget)
+    for (const buildingId of ids) {
+      try {
+        const res = await axios.get(
+                `${API_URL}/buildings/${encodeURIComponent(buildingId)}/debit`,
+                {
+                  params: { limit: 30 },
+                  headers,          // ← kalau belum login, headers kosong, tetap fetch
+                  timeout: 10000,
+                }
+              );
 
-          if (!reports.length) return;
+        const reports: any[] = Array.isArray(res.data)
+          ? res.data
+          : res.data?.reports ?? [];
 
-          // Ambil report terbaru (backend sudah sort DESC by tanggal)
-          const latest = reports[0];
-          const rows = latest.rows || [];
+        if (reports.length === 0) {
+          console.log(`[useLatestDebits] ${buildingId} — belum ada report`);
+          continue;
+        }
 
-          // Ambil row yang ada datanya — cek SEMUA kolom, bukan cuma intake
-          const filled = rows.filter(
-            (r: any) =>
-              r.tma ||
-              r.limpasan ||
-              r.intakeKiri ||
-              r.intakeKanan ||
-              r.jumlah ||
-              r.kaliCipamingkis ||
-              r.hujan ||
-              r.keterangan
-          );
+        // Sort DESC by tanggal (backend harusnya udah, tapi kita pastikan)
+        const sorted = [...reports].sort(
+          (a, b) =>
+            new Date(b.tanggal || 0).getTime() -
+            new Date(a.tanggal || 0).getTime()
+        );
 
-          if (!filled.length) {
-            console.warn(`[useLatestDebits] ${id} — rows kosong`);
-            return;
+        // 🔥 Cari report terbaru yang PUNYA minimal 1 row berisi
+        let picked: { tanggal: string; rows: DebitRow[] } | null = null;
+        for (const rep of sorted) {
+          const rowsRaw: DebitRow[] = Array.isArray(rep.rows) ? rep.rows : [];
+          const validRows = rowsRaw.filter(isValidRow);
+          if (validRows.length > 0) {
+            picked = { tanggal: rep.tanggal, rows: validRows };
+            break;
           }
+        }
 
-          // Ambil row paling akhir yang ada datanya (jam terakhir diisi)
-          const lastRow = filled[filled.length - 1];
+        if (!picked) {
+          console.log(`[useLatestDebits] ${buildingId} — semua rows kosong`);
+          continue;
+        }
 
-          const kiri = toNumber(lastRow.intakeKiri);
-          const kanan = toNumber(lastRow.intakeKanan);
-          const jumlah = toNumber(lastRow.jumlah);
-          const limpasan = toNumber(lastRow.limpasan);
+        // Ambil row jam paling akhir (data terbaru di hari itu)
+        const sortedRows = [...picked.rows].sort((a, b) =>
+          String(a.jam).localeCompare(String(b.jam))
+        );
+        const lastRow = sortedRows[sortedRows.length - 1];
 
-          // Fallback: kalau jumlah 0, pakai intake kiri+kanan, atau limpasan
-          const debit = jumlah || (kiri + kanan) || limpasan;
+        // Hitung debit
+        const debit = computeDebit(lastRow);
 
-          console.log(`[useLatestDebits] ${id} → debit=${debit} (jumlah=${jumlah}, kiri=${kiri}, kanan=${kanan}, limpasan=${limpasan})`);
+        console.log(
+          `[useLatestDebits] ${buildingId} → ${picked.tanggal} ${lastRow.jam} debit=${debit}`
+        );
 
-          results[id] = {
-            buildingId: id,
-            tanggal: latest.tanggal,
-            jam: lastRow.jam || '',
-            debit,
-            limpasan,
-            intakeKiri: kiri,
-            intakeKanan: kanan,
-            jumlah,
-          };
-        } catch (err: any) {
-          console.error(
-            `[useLatestDebits] Gagal fetch ${id}:`,
-            err.response?.data?.detail || err.message
+        result[buildingId] = {
+          buildingId,
+          debit,
+          tanggal: picked.tanggal,
+          jam: lastRow.jam,
+          row: lastRow,
+        };
+      } catch (err: any) {
+        if (err.response?.status === 404) {
+          console.log(`[useLatestDebits] ${buildingId} — 404`);
+        } else if (err.response?.status === 401) {
+          console.warn(`[useLatestDebits] ${buildingId} — 401 unauthorized`);
+        } else {
+          console.warn(
+            `[useLatestDebits] ${buildingId} — error:`,
+            err.response?.status || err.message
           );
         }
-      })
-    );
+      }
+    }
 
-    console.log('[useLatestDebits] Hasil akhir:', results);
-    setDebits(results);
-  }, [session?.accessToken, idsKey]);
+    setLatestDebits(result);
+  };
 
+  // Initial + polling
   useEffect(() => {
-    fetchAll();
-    const t = setInterval(fetchAll, 60_000);
-    return () => clearInterval(t);
-  }, [fetchAll]);
+    if (status === 'loading') return;
 
-  return debits;
+    fetchAll();
+
+    const pollMs = options?.pollMs ?? 60_000;
+    const interval = setInterval(fetchAll, pollMs);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(buildingIds), token, status, options?.pollMs]);
+
+  return { latestDebits, refresh: fetchAll };
 }
+
+export default useLatestDebits;

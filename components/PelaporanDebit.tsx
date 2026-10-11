@@ -60,17 +60,20 @@ function localDateStr(d: Date) {
 }
 
 function hourSlot(d: Date) {
-  return `${String(d.getHours()).padStart(2, '0')}:00`;
+  const h = d.getHours();
+  // HOURS mulai dari '01.00' sampai '24.00'
+  // Jam 0 (midnight) di-map ke '24.00'
+  const hourNum = h === 0 ? 24 : h;
+  return `${String(hourNum).padStart(2, '0')}.00`;
 }
 
 function getHourLabel(jam: string) {
-  const h = parseInt(jam.split(':')[0] ?? '0', 10);
+  const h = parseInt(jam.split(/[.:]/)[0] ?? '0', 10);
   if (h < 6) return 'Malam';
   if (h < 12) return 'Pagi';
   if (h < 18) return 'Siang';
   return 'Sore';
 }
-
 export default function PelaporanDebit({
   buildingId,
   buildingName,

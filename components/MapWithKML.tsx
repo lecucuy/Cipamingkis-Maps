@@ -268,16 +268,26 @@ useEffect(() => {
   // ====== FLOW ANIMATION STATE ======
   const [showFlowAnimation, setShowFlowAnimation] = useState(true);
   // Ambil semua ID bendung
-  const bendungIds = useMemo(
-    () =>
-      stationPoints
-        .filter((p: any) => isBendungCategory(p.category))
-        .map((p: any) => p.name),
-    [stationPoints]
+const bendungIds = useMemo(() => {
+  const ids = stationPoints
+    .filter((p: any) => isBendungCategory(p.category))
+    .map((p: any) => p.name);
+
+  // 🔥 Tambahkan polygon Mercu Bendung (karena dia polygon, bukan point)
+  const mercuPoly = (geoData?.polygons || []).find((p: any) =>
+    /mercu\s*bendung|bendung\s*mercu/i.test(p.name || '')
   );
+  if (mercuPoly?.name && !ids.includes(mercuPoly.name)) {
+    ids.push(mercuPoly.name);
+  }
+
+  console.log('[bendungIds]', ids);  // DEBUG
+  return ids;
+}, [stationPoints, geoData]);
 
   // Hook ambil debit terbaru — polling 60s
-  const latestDebits = useLatestDebits(bendungIds);
+const { latestDebits } = useLatestDebits(bendungIds);
+
 
   // Map: nama saluran → info flow
   // Map: nama saluran → info flow
@@ -1311,6 +1321,12 @@ useEffect(() => {
       // ===== 🔥 MERCU BENDUNG: WATERFALL ANIMATION =====
       const isMercu = /mercu\s*bendung|bendung\s*mercu/i.test(poly.name || '');
       if (isMercu) {
+        const mercuDebit =
+          latestDebits?.['Mercu Bendung'] ||
+          Object.values(latestDebits || {}).find(
+            (f: any) => /mercu/i.test(f.buildingId || '')
+          ) ||
+          null;
         // Inject style sekali saja
         if (!document.getElementById('mercu-waterfall-style')) {
           const style = document.createElement('style');
@@ -1435,17 +1451,36 @@ useEffect(() => {
 
             // ---- Popup ----
             const popupContent = `
-              <div style="font-family:Inter;min-width:210px;">
-                <h4 style="margin:0 0 6px 0;font-size:14px;color:#1a1a2e;">${poly.name || 'Mercu Bendung'}</h4>
-                <div style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;background:#e0f2fe;border-radius:8px;border:1px solid #7dd3fc;">
-                  <span style="font-size:14px;">💧</span>
-                  <span style="font-size:11px;font-weight:700;color:#0284C7;letter-spacing:0.3px;">AIR TERJUN / MERCU</span>
+                <div style="font-family:Inter;min-width:230px;">
+                  <h4 style="margin:0 0 6px 0;font-size:14px;color:#1a1a2e;">${poly.name || 'Mercu Bendung'}</h4>
+
+                  <div style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;background:#e0f2fe;border-radius:8px;border:1px solid #7dd3fc;">
+                    <span style="font-size:14px;">💧</span>
+                    <span style="font-size:11px;font-weight:700;color:#0284C7;letter-spacing:0.3px;">AIR TERJUN / MERCU</span>
+                  </div>
+
+                  ${mercuDebit ? `
+                    <div style="margin-top:8px;padding:10px;background:#f0f9ff;border-radius:8px;border:1px solid #bae6fd;">
+                      <div style="font-size:10px;color:#666;margin-bottom:3px;">Debit terbaru</div>
+                      <div style="font-size:20px;font-weight:800;color:#0369a1;font-family:monospace;line-height:1.1;">
+                        ${Number(mercuDebit.debit).toFixed(2)}
+                        <span style="font-size:11px;font-weight:600;">m³/d</span>
+                      </div>
+                      <div style="font-size:9px;color:#94a3b8;margin-top:4px;">
+                        Update: ${mercuDebit.tanggal || '-'} · ${mercuDebit.jam || '-'}
+                      </div>
+                    </div>
+                  ` : `
+                    <div style="margin-top:8px;padding:8px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;color:#94a3b8;font-size:10px;">
+                      Belum ada data debit hari ini.
+                    </div>
+                  `}
+
+                  <p style="margin:8px 0 0 0;font-size:10px;color:#666;line-height:1.4;">
+                    Aliran air jatuh dari puncak bendung menuju kolam olak.
+                  </p>
                 </div>
-                <p style="margin:8px 0 0 0;font-size:10px;color:#666;line-height:1.4;">
-                  Aliran air jatuh dari puncak bendung menuju kolam olak.
-                </p>
-              </div>
-            `;
+              `;
             mercuPool.bindPopup(popupContent);
             mercuPool.on('click', () => {
               setSelectedFeature({
@@ -1455,6 +1490,11 @@ useEffect(() => {
                 tags: poly.tags || [],
                 lat: (p0[0] + pMid[0]) / 2,
                 lon: (p0[1] + pMid[1]) / 2,
+
+                // 🔥 debit
+                debit: mercuDebit?.debit ?? null,
+                debitInfo: mercuDebit || null,
+                bendungName: 'Mercu Bendung',
               });
               if (!isPanelOpen) setIsPanelOpen(true);
             });
@@ -2470,6 +2510,33 @@ if (showWind && envData?.windSpeed) {
                 onClose={() => setSelectedFeature(null)}
               />
             )}
+
+            {selectedFeature?.category === 'MERCU_BENDUNG' && (
+            <div className="bg-sky-50 dark:bg-sky-900/20 border border-sky-200 dark:border-sky-800 rounded-xl p-4">
+              <h4 className="text-sm font-semibold text-sky-700 dark:text-sky-300 flex items-center gap-2">
+                <i className="fa-solid fa-water"></i> Debit Mercu Bendung
+              </h4>
+
+              {selectedFeature.debitInfo ? (
+                <>
+                  <div className="mt-2 flex items-baseline gap-2">
+                    <span className="text-2xl font-bold text-sky-600 dark:text-sky-400 font-mono">
+                      {Number(selectedFeature.debitInfo.debit).toFixed(2)}
+                    </span>
+                    <span className="text-xs text-gray-500 dark:text-gray-400">m³/d</span>
+                  </div>
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    Update: {selectedFeature.debitInfo.tanggal || '-'} ·{' '}
+                    {selectedFeature.debitInfo.jam || '-'}
+                  </p>
+                </>
+              ) : (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                  Belum ada laporan debit hari ini.
+                </p>
+              )}
+            </div>
+          )}
 
             {/* 🔥 RAB PROGRESS — muncul untuk non-reporter kalau bangunan punya RAB aktif */}
           {selectedFeature && (

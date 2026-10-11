@@ -34,64 +34,46 @@ export default function RABProgressPanel({ buildingId, buildingName, onRefresh }
   const [detail, setDetail] = useState<RABDetail | null>(null);
   const [showDetail, setShowDetail] = useState(false);
 
-const loadRabs = async () => {
-  if (!buildingId) return;
-  setLoading(true);
-  try {
-    // guest mode: kirim hanya buildingId
-    const r = token
-      ? await rabApi.list(token, buildingId)
-      : await rabApi.list(buildingId);
+  const loadRabs = async () => {
+    if (!buildingId) return;
+    setLoading(true);
+    try {
+      // guest mode: kirim hanya buildingId
+      const r = token
+        ? await rabApi.list(token, buildingId)
+        : await rabApi.list(buildingId);
 
-    const active = (r.items || []).filter(
-      (x: any) => x.status === 'berjalan' || x.status === 'selesai'
-    );
-    setRabs(active);
-  } catch (e: any) {
-    console.error('Load RAB error:', e);
-    setRabs([]);
-  } finally {
-    setLoading(false);
-  }
-};
+      const active = (r.items || []).filter(
+        (x: any) => x.status === 'berjalan' || x.status === 'selesai'
+      );
+      setRabs(active);
+    } catch (e: any) {
+      console.error('Load RAB error:', e);
+      setRabs([]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     loadRabs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [buildingId, token]);
 
-const loadDetail = async (rabId: string) => {
-  try {
-    const r = token
-      ? await rabApi.detail(token, rabId)
-      : await rabApi.detail(rabId);
-    setDetail(r);
-  } catch (e: any) {
-    toast.error(e.response?.data?.detail || 'Gagal load detail RAB');
-  }
-};
+  const loadDetail = async (rabId: string) => {
+    try {
+      const r = token
+        ? await rabApi.detail(token, rabId)
+        : await rabApi.detail(rabId);
+      setDetail(r);
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || 'Gagal load detail RAB');
+    }
+  };
 
-  if (loading) {
-    return (
-      <div className="bg-white dark:bg-[#1a1a2e] border border-gray-200 dark:border-[#2a2a4e] rounded-xl p-4">
-        <div className="flex items-center gap-2 text-xs text-gray-400">
-          <div className="w-3 h-3 border-2 border-[#00c8ff] border-t-transparent rounded-full animate-spin" />
-          Memuat RAB...
-        </div>
-      </div>
-    );
-  }
-
-  if (rabs.length === 0) {
-    return (
-      <div className="bg-gray-50 dark:bg-[#0f0f23] border border-dashed border-gray-200 dark:border-[#2a2a4e] rounded-xl p-4 text-center">
-        <i className="fa-solid fa-clipboard-list text-gray-300 text-lg mb-1" />
-        <p className="text-[11px] text-gray-500">
-          Belum ada RAB aktif di <b>{buildingName}</b>
-        </p>
-      </div>
-    );
-  }
+  // 🔥 Sembunyikan total kalau masih loading ATAU nggak ada RAB aktif
+  if (loading) return null;
+  if (rabs.length === 0) return null;
 
   return (
     <>
