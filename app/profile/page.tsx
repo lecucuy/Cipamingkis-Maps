@@ -13,6 +13,8 @@ import ProgressTab from '@/components/profile/tabs/ProgressTab';
 import FinanceTab from '@/components/profile/tabs/FinanceTab';
 import ActivityTab from '@/components/profile/tabs/ActivityTab';
 import SecurityTab from '@/components/profile/tabs/SecurityTab';
+import LiveTab from '@/components/profile/tabs/LiveTab';   // 🔥 TAMBAH
+
 
 export default function ProfilePage() {
   const { data: session, update: updateSession } = useSession();
@@ -184,6 +186,7 @@ export default function ProfilePage() {
                     onSessionRevoked={(id) => setSessions(p => p.filter(x => x.id !== id))}
                   />
                 )}
+
               </div>
             )}
           </div>

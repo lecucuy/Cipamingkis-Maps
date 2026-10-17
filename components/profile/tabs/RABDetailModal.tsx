@@ -4,6 +4,7 @@ import { useSession } from 'next-auth/react';
 import { toast } from 'react-hot-toast';
 import { rabApi, RABDetail, RABListItemDetail } from '@/lib/api/rab';
 import RABItemMediaModal from './RABItemMediaModal';
+import MediaPreview from './MediaPreview';
 import { normalizeRole } from '@/types/pelaporan';
 
 const MIN_PHOTOS = 3;
@@ -23,15 +24,29 @@ export default function RABDetailModal({ rabId, open, onClose, onChanged }: Prop
   const { data: session } = useSession();
   const token = (session as any)?.accessToken as string | undefined;
 
-  // 🔥 GATING
+  // 🔥 GATING role
   const role = normalizeRole(session?.user?.role);
   const canSeeProgress = !!role && PROGRESS_ROLES.includes(role);
 
+  // === state ===
   const [detail, setDetail] = useState<RABDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [openMedia, setOpenMedia] = useState<string | null>(null);
+
+  // 🔥 preview media (semua role, tidak butuh login)
+  const [previewMedia, setPreviewMedia] = useState<{
+    url: string;
+    type: 'photo' | 'video';
+    description?: string;
+    filename?: string;
+  } | null>(null);
+
+  // 🔥 ownership — harus SETELAH `detail` & `canSeeProgress`
+  const isOwner = !!detail?.is_owner;
+  const canEdit  = canSeeProgress && isOwner;
+
 
   const load = async () => {
     setLoading(true);
@@ -154,6 +169,13 @@ export default function RABDetailModal({ rabId, open, onClose, onChanged }: Prop
                 )}
               </div>
 
+              {canSeeProgress && !isOwner && detail.status !== 'draft' && (
+                <div className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-[#0f0f23] border border-slate-200 dark:border-[#2a2a4e] text-[10px] text-slate-500 flex items-center gap-2">
+                  <i className="fa-solid fa-eye" />
+                  Mode lihat — hanya uploader RAB yang bisa update progress & bukti.
+                </div>
+              )}
+
               {/* TOMBOL MULAI */}
               {detail.status === 'draft' && canSeeProgress && (
                 <button
@@ -262,7 +284,7 @@ export default function RABDetailModal({ rabId, open, onClose, onChanged }: Prop
                                 </div>
                               )}
 
-                              {/* BUKTI MEDIA — tetap tampil untuk semua role */}
+                              {/* BUKTI MEDIA — klik thumbnail untuk preview (semua role) */}
                               <div className="pt-1">
                                 <div className="flex items-center justify-between mb-1.5">
                                   <p className="text-[10px] font-semibold text-gray-500 uppercase">
@@ -287,7 +309,17 @@ export default function RABDetailModal({ rabId, open, onClose, onChanged }: Prop
                                     {(it.media || []).slice(0, 8).map(m => (
                                       <div
                                         key={m.id}
-                                        className="w-10 h-10 rounded-md overflow-hidden border border-gray-200 dark:border-[#2a2a4e]"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setPreviewMedia({
+                                            url: m.url,
+                                            type: m.type as 'photo' | 'video',
+                                            description: m.description,
+                                            filename: m.filename,
+                                          });
+                                        }}
+                                        className="w-10 h-10 rounded-md overflow-hidden border border-gray-200 dark:border-[#2a2a4e] cursor-pointer hover:border-[#00c8ff] transition"
+                                        title={m.type === 'photo' ? 'Lihat foto' : 'Lihat video'}
                                       >
                                         {m.type === 'photo' ? (
                                           <img src={m.url} alt="" className="w-full h-full object-cover" />
@@ -298,6 +330,11 @@ export default function RABDetailModal({ rabId, open, onClose, onChanged }: Prop
                                         )}
                                       </div>
                                     ))}
+                                    {(it.media || []).length > 8 && (
+                                      <div className="w-10 h-10 rounded-md border border-dashed border-gray-300 dark:border-[#2a2a4e] flex items-center justify-center text-[9px] text-gray-400">
+                                        +{(it.media || []).length - 8}
+                                      </div>
+                                    )}
                                   </div>
                                 )}
                               </div>
@@ -429,7 +466,7 @@ export default function RABDetailModal({ rabId, open, onClose, onChanged }: Prop
         </div>
       </div>
 
-      {/* MODAL MEDIA */}
+      {/* MODAL MEDIA — hanya role berwenang untuk upload/kelola */}
       {openMedia && detail && canSeeProgress && (() => {
         const item = detail.groups.flatMap(g => g.items).find(it => it.kode_unik === openMedia);
         if (!item) return null;
@@ -454,6 +491,17 @@ export default function RABDetailModal({ rabId, open, onClose, onChanged }: Prop
           />
         );
       })()}
+
+      {/* PREVIEW FOTO/VIDEO — untuk SEMUA role, tidak butuh login */}
+      {previewMedia && (
+        <MediaPreview
+          url={previewMedia.url}
+          type={previewMedia.type}
+          description={previewMedia.description}
+          filename={previewMedia.filename}
+          onClose={() => setPreviewMedia(null)}
+        />
+      )}
     </div>
   );
 }

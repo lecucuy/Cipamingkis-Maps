@@ -49,7 +49,9 @@ import RainfallHistory from '@/components/RainfallHistory';
 import RABProgressPanel from './progress/RABProgressPanel';
 import RABUploadModal from '@/components/progress/RABUploadModal';
 import AddWorkModal from '@/components/progress/AddWorkModal';
-
+import LiveStreamer from '@/components/live/LiveStreamer';
+import LiveViewer from '@/components/live/LiveViewer';
+import { useLiveRooms, LiveRoom } from '@/hooks/useLiveRooms';
 
 declare module 'leaflet' {
   function heat(latlngs: any[], options?: any): any;
@@ -105,6 +107,11 @@ export const CATEGORY_CONFIG: Record<string, any> = {
   "BENDUNG": { icon: "fa-dam", color: "#FF6B6B", label: "Bendung", type: "point" },
   "KOLAM": { icon: "fa-water", color: "#4ECDC4", label: "Kolam", type: "point" },
   "KEJURON": { icon: "fa-border-all", color: "#AAAAAA", label: "Batas Kejuron", type: "line" },
+  "SUMBER_PENCEMARAN": {
+  icon: "fa-biohazard",
+  color: "#DC2626",
+  label: "Sumber Pencemaran",
+  type: "point"},
  };
 
  // ============ FLOW HELPERS ============
@@ -206,6 +213,198 @@ export default function MapWithKML() {
   const [showAddWorkModal, setShowAddWorkModal] = useState(false);
   const [showRABModal, setShowRABModal] = useState(false);
   const [progressRefreshKey, setProgressRefreshKey] = useState(0);
+    // ===== LIVE STREAMING =====
+  const { rooms: liveRooms, refresh: refreshLiveRooms } = useLiveRooms(
+    session?.accessToken as string | undefined
+  );
+  const [liveStreamerRoom, setLiveStreamerRoom] = useState<string | null>(null);
+  const [liveViewerRoom, setLiveViewerRoom] = useState<string | null>(null);
+  const [startingLive, setStartingLive] = useState(false);
+  const liveLayerRef = useRef<L.LayerGroup | null>(null);
+
+  // Map: building_id → live room (untuk lookup cepat)
+  const liveByBuilding = useMemo(() => {
+    const m: Record<string, LiveRoom> = {};
+    liveRooms.forEach(r => { m[r.building_id] = r; });
+    return m;
+  }, [liveRooms]);
+    const userRole = session?.user?.role;
+    const userPolygon = session?.user?.polygon; // hanya ada untuk TPOP
+    const userLat = session?.user?.lat;
+    const userLon = session?.user?.lon;
+
+
+  // Cek apakah suatu building berada di polygon user
+  const isBuildingInMyPolygon = useCallback((building: any) => {
+    if (!userPolygon || userPolygon.length < 3) return false;
+    if (typeof building?.lat !== 'number' || typeof building?.lon !== 'number') return false;
+    try {
+      const ring = [...userPolygon];
+      if (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) {
+        ring.push(ring[0]);
+      }
+      return turf.booleanPointInPolygon(
+        turf.point([building.lon, building.lat]),
+        turf.polygon([ring])
+      );
+    } catch {
+      return false;
+    }
+  }, [userPolygon]);
+
+  // Mulai live di building tertentu
+  const startLiveAt = useCallback(async (building: any) => {
+    if (!session?.accessToken) { toast.error('Login dulu'); return; }
+    if (!building?.name) return;
+    setStartingLive(true);
+    try {
+      const res = await axios.post(
+        `${API_URL}/live/start`,
+        {
+          building_id: building.name,
+          building_name: building.name,
+          title: `Live dari ${building.name}`,
+        },
+        { headers: { Authorization: `Bearer ${session.accessToken}` } }
+      );
+      const roomId = res.data?.room_id;
+      if (roomId) {
+        setLiveStreamerRoom(roomId);
+        refreshLiveRooms();
+        toast.success(res.data?.existing ? 'Melanjutkan live yang aktif' : 'Live dimulai!');
+      }
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || 'Gagal memulai live');
+    } finally {
+      setStartingLive(false);
+    }
+  }, [session, API_URL, refreshLiveRooms]);
+
+  // Stop live
+  const stopLive = useCallback(async (roomId: string) => {
+    if (!session?.accessToken) return;
+    try {
+      await axios.post(
+        `${API_URL}/live/${roomId}/stop`,
+        {},
+        { headers: { Authorization: `Bearer ${session.accessToken}` } }
+      );
+    } catch {}
+    setLiveStreamerRoom(null);
+    refreshLiveRooms();
+  }, [session, API_URL, refreshLiveRooms]);
+
+  // Global bridge untuk tombol "Tonton Live" di popup Leaflet
+  useEffect(() => {
+    (window as any).__openLive = (roomId: string) => setLiveViewerRoom(roomId);
+    return () => { delete (window as any).__openLive; };
+  }, []);
+
+    // ===== LIVE MARKERS (indikator live di peta) =====
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map || !L) return;
+
+    // Bersihkan layer lama
+    if (liveLayerRef.current) {
+      map.removeLayer(liveLayerRef.current);
+      liveLayerRef.current = null;
+    }
+
+    if (liveRooms.length === 0) return;
+
+    // Inject animation style sekali
+    if (!document.getElementById('live-marker-style')) {
+      const style = document.createElement('style');
+      style.id = 'live-marker-style';
+      style.textContent = `
+        @keyframes live-pulse {
+          0%, 100% { transform: scale(1); box-shadow: 0 0 0 4px rgba(239,68,68,0.35), 0 4px 16px rgba(239,68,68,0.6); }
+          50% { transform: scale(1.08); box-shadow: 0 0 0 10px rgba(239,68,68,0.15), 0 4px 24px rgba(239,68,68,0.85); }
+        }
+        @keyframes live-ring {
+          0% { transform: scale(0.6); opacity: 1; }
+          100% { transform: scale(2.2); opacity: 0; }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    const group = L.layerGroup();
+
+    liveRooms.forEach(room => {
+      const building = stationPointsRef.current[room.building_id];
+      if (!building) return;
+
+      const icon = L.divIcon({
+        className: 'live-marker-div',
+        html: `
+          <div style="position:relative;text-align:center;">
+            <div style="position:absolute;top:0;left:50%;transform:translateX(-50%);width:48px;height:48px;border-radius:50%;background:rgba(239,68,68,0.35);animation:live-ring 1.8s ease-out infinite;pointer-events:none;"></div>
+            <div style="position:relative;width:48px;height:48px;border-radius:50%;background:#ef4444;border:3px solid white;box-shadow:0 0 0 3px rgba(239,68,68,0.4),0 6px 20px rgba(239,68,68,0.6);display:flex;align-items:center;justify-content:center;animation:live-pulse 1.6s ease-in-out infinite;cursor:pointer;">
+              <span style="color:white;font-weight:900;font-size:10px;letter-spacing:0.8px;">LIVE</span>
+            </div>
+            <div style="font-size:9px;font-weight:700;color:white;background:#ef4444;padding:2px 8px;border-radius:10px;margin-top:4px;white-space:nowrap;max-width:90px;overflow:hidden;text-overflow:ellipsis;box-shadow:0 2px 8px rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.5);">
+              ${room.streamer_name}
+            </div>
+          </div>
+        `,
+        iconSize: [48, 72],
+        iconAnchor: [24, 36],
+        popupAnchor: [0, -36],
+      });
+
+      const marker = L.marker([building.lat, building.lon], {
+        icon,
+        zIndexOffset: 1000,
+      });
+
+      marker.bindPopup(`
+        <div style="font-family:Inter;min-width:200px;">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+            <span style="background:#ef4444;color:white;font-size:9px;font-weight:800;padding:2px 8px;border-radius:10px;display:inline-flex;align-items:center;gap:3px;">
+              <span style="width:5px;height:5px;border-radius:50%;background:white;"></span> LIVE
+            </span>
+            <span style="font-size:10px;color:#666;display:inline-flex;align-items:center;gap:2px;">
+              👁 ${room.viewers}
+            </span>
+          </div>
+          <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">${room.title}</h4>
+          <p style="margin:0 0 4px 0;font-size:11px;color:#666;">
+            <b>@${room.streamer_name}</b> · 📍 ${room.building_name}
+          </p>
+          ${room.is_mine ? `
+            <p style="margin:0 0 8px 0;font-size:10px;color:#16a34a;font-weight:600;">✓ Ini live Anda</p>
+            <button onclick="window.__openLive('${room.room_id}')" style="width:100%;padding:8px;background:#16a34a;color:white;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;">
+              Kelola Live
+            </button>
+          ` : `
+            <button onclick="window.__openLive('${room.room_id}')" style="width:100%;padding:8px;background:#ef4444;color:white;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;">
+              ▶ Tonton Live
+            </button>
+          `}
+        </div>
+      `, { maxWidth: 280 });
+
+      marker.on('click', () => {
+        if (room.is_mine) {
+          setLiveStreamerRoom(room.room_id);
+        }
+      });
+
+      group.addLayer(marker);
+    });
+
+    group.addTo(map);
+    liveLayerRef.current = group;
+
+    return () => {
+      if (liveLayerRef.current && mapRef.current) {
+        mapRef.current.removeLayer(liveLayerRef.current);
+        liveLayerRef.current = null;
+      }
+    };
+  }, [liveRooms, mapReady, L, stationPoints]);
 
   useEffect(() => {
   const map = mapRef.current;
@@ -384,10 +583,7 @@ const {
   clearUserLocation,
 } = useUserLocation(mapRef.current, L);
 
-    const userRole = session?.user?.role;
-    const userPolygon = session?.user?.polygon; // hanya ada untuk TPOP
-    const userLat = session?.user?.lat;
-    const userLon = session?.user?.lon;
+   
     
 
 useEffect(() => {
@@ -702,6 +898,50 @@ const toggleTemperature = useCallback(() => {
 
     let iconHtml = '';
 
+        // 🚨 SUMBER PENCEMARAN — marker khusus merah biohazard
+    if (point.category === 'SUMBER_PENCEMARAN') {
+      if (!document.getElementById('pollution-style')) {
+        const style = document.createElement('style');
+        style.id = 'pollution-style';
+        style.textContent = `
+          @keyframes pollution-ring {
+            0%   { transform: scale(0.6); opacity: 1; }
+            100% { transform: scale(2.4); opacity: 0; }
+          }
+          @keyframes pollution-pulse {
+            0%, 100% {
+              transform: scale(1);
+              box-shadow: 0 0 0 4px rgba(220,38,38,0.35), 0 6px 20px rgba(220,38,38,0.6);
+            }
+            50% {
+              transform: scale(1.1);
+              box-shadow: 0 0 0 14px rgba(220,38,38,0.15), 0 6px 28px rgba(220,38,38,0.9);
+            }
+          }
+        `;
+        document.head.appendChild(style);
+      }
+
+      iconHtml = `
+        <div style="position:relative;text-align:center;">
+          <div style="position:absolute;top:0;left:50%;transform:translateX(-50%);width:48px;height:48px;border-radius:50%;background:rgba(220,38,38,0.35);animation:pollution-ring 1.8s ease-out infinite;pointer-events:none;"></div>
+          <div style="position:relative;width:48px;height:48px;border-radius:50%;background:linear-gradient(135deg,#EF4444,#991B1B);border:3px solid white;box-shadow:0 0 0 3px rgba(220,38,38,0.5),0 6px 20px rgba(220,38,38,0.6);display:flex;align-items:center;justify-content:center;animation:pollution-pulse 1.6s ease-in-out infinite;cursor:pointer;">
+            <i class="fa-solid fa-biohazard" style="color:white;font-size:20px;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4));"></i>
+          </div>
+          <div style="font-size:9px;font-weight:800;color:white;background:#DC2626;padding:2px 8px;border-radius:10px;margin-top:4px;white-space:nowrap;max-width:100px;overflow:hidden;text-overflow:ellipsis;box-shadow:0 2px 8px rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.6);letter-spacing:0.3px;">
+            ${label}
+          </div>
+        </div>
+      `;
+      return L.divIcon({
+        className: 'custom-div-icon',
+        html: iconHtml,
+        iconSize: [48, 72],
+        iconAnchor: [24, 36],
+        popupAnchor: [0, -36],
+      });
+    }
+
     if (hasPhoto) {
       const firstMedia = media.find(m => m.media_type === 'photo' || m.media_type === 'video');
       iconHtml = `
@@ -783,11 +1023,27 @@ const toggleTemperature = useCallback(() => {
         const res = await axios.get(`${API_URL}/intake/geodata`, { timeout: 10000 });
         const data = res.data;
 
-        const categorizedPoints = (data.points || []).map((p: any) => ({
-          ...p,
-          category: categorizeFeature(p.name, p.description, 'point'),
-          tags: extractHashtags(p.description || ''),
-        }));
+        const categorizedPoints = (data.points || []).map((p: any) => {
+          const tags = extractHashtags(p.description || '');
+          let category = categorizeFeature(p.name, p.description, 'point');
+
+          // 🚨 Deteksi Sumber Pencemaran
+          //   - Nama/deskripsi mengandung "pencemar" / "limbah" / "polusi" / "tumpahan"
+          //   - ATAU punya hashtag #pencemaran / #sumberpencemaran / #limbah / #polusi
+          const POLLUTION_TAGS = ['pencemaran', 'sumberpencemaran', 'limbah', 'polusi', 'tumpahan'];
+          const isPollution =
+            /pencemar|limbah|polusi|tumpahan/i.test(p.name || '') ||
+            /pencemar|limbah|polusi|tumpahan/i.test(p.description || '') ||
+            tags.some((t: string) => POLLUTION_TAGS.includes(t.toLowerCase()));
+
+          if (isPollution) category = 'SUMBER_PENCEMARAN';
+
+          return {
+            ...p,
+            category,
+            tags,
+          };
+        });
 
         const categorizedLines = (data.lines || []).map((l: any) => ({
           ...l,
@@ -920,6 +1176,7 @@ const toggleTemperature = useCallback(() => {
     "LUASAN_SAWAH": true,
     "BANJIR_POLY": true,
     "SALURAN_DEFAULT": true,
+    "SUMBER_PENCEMARAN": true,
   });
 
 
@@ -2317,6 +2574,8 @@ if (showWind && envData?.windSpeed) {
     {toolsVisible && (
       <div className="flex flex-col gap-2 mt-1">
         
+
+
             
         {/* 🔥 PANEL MUSIM TANAM — RENDER ACTUAL PANEL */}
       {showMusimTanam && normalizeRole(session?.user?.role) === 'juru' && (
@@ -2357,7 +2616,18 @@ if (showWind && envData?.windSpeed) {
     )}
   </div>
 </div>
-
+    {/* LIVE COUNT INDICATOR */}
+{liveRooms.length > 0 && (
+  <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[998] flex items-center gap-2 bg-black/75 backdrop-blur-md px-3 py-1.5 rounded-full shadow-lg border border-red-500/40">
+    <span className="relative flex h-2 w-2">
+      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+      <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+    </span>
+    <span className="text-[11px] font-bold text-white tracking-wide">
+      {liveRooms.length} LIVE
+    </span>
+  </div>
+)}
         {/* SIDE PANEL */}
           <div
             className={`
@@ -2537,6 +2807,68 @@ if (showWind && envData?.windSpeed) {
               )}
             </div>
           )}
+
+          {/* 🔴 MULAI LIVE DI SINI — hanya TPOP + building dalam polygon */}
+          {selectedFeature &&
+          normalizeRole(session?.user?.role) === 'tpop' &&
+          isBuildingInMyPolygon(selectedFeature) &&
+          !liveByBuilding[selectedFeature.name] && (
+            <button
+              onClick={() => startLiveAt(selectedFeature)}
+              disabled={startingLive}
+              className={`w-full py-3 rounded-xl text-sm font-semibold text-white transition flex items-center justify-center gap-2 shadow-lg ${
+                startingLive
+                  ? 'bg-gray-400 cursor-wait'
+                  : 'bg-gradient-to-r from-red-500 to-rose-600 hover:opacity-95 shadow-red-500/40'
+              }`}
+            >
+              <i className={`fa-solid ${startingLive ? 'fa-spinner fa-spin' : 'fa-video'}`}></i>
+              {startingLive ? 'Memulai Live...' : 'Mulai Live di Sini'}
+            </button>
+          )}
+
+      {/* Sudah ada live di building ini (bukan punya user) */}
+      {selectedFeature &&
+      liveByBuilding[selectedFeature.name] &&
+      !liveByBuilding[selectedFeature.name].is_mine && (
+        <button
+          onClick={() => setLiveViewerRoom(liveByBuilding[selectedFeature.name].room_id)}
+          className="w-full py-3 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-500 to-rose-600 hover:opacity-95 flex items-center justify-center gap-2 shadow-lg shadow-red-500/40"
+        >
+          <i className="fa-solid fa-play"></i>
+          Tonton Live di Sini
+        </button>
+      )}{/* 🔴 MULAI LIVE DI SINI — hanya TPOP + building dalam polygon */}
+      {selectedFeature &&
+      normalizeRole(session?.user?.role) === 'tpop' &&
+      isBuildingInMyPolygon(selectedFeature) &&
+      !liveByBuilding[selectedFeature.name] && (
+        <button
+          onClick={() => startLiveAt(selectedFeature)}
+          disabled={startingLive}
+          className={`w-full py-3 rounded-xl text-sm font-semibold text-white transition flex items-center justify-center gap-2 shadow-lg ${
+            startingLive
+              ? 'bg-gray-400 cursor-wait'
+              : 'bg-gradient-to-r from-red-500 to-rose-600 hover:opacity-95 shadow-red-500/40'
+          }`}
+        >
+          <i className={`fa-solid ${startingLive ? 'fa-spinner fa-spin' : 'fa-video'}`}></i>
+          {startingLive ? 'Memulai Live...' : 'Mulai Live di Sini'}
+        </button>
+      )}
+
+      {/* Sudah ada live di building ini (bukan punya user) */}
+      {selectedFeature &&
+      liveByBuilding[selectedFeature.name] &&
+      !liveByBuilding[selectedFeature.name].is_mine && (
+        <button
+          onClick={() => setLiveViewerRoom(liveByBuilding[selectedFeature.name].room_id)}
+          className="w-full py-3 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-500 to-rose-600 hover:opacity-95 flex items-center justify-center gap-2 shadow-lg shadow-red-500/40"
+        >
+          <i className="fa-solid fa-play"></i>
+          Tonton Live di Sini
+        </button>
+      )}
 
             {/* 🔥 RAB PROGRESS — muncul untuk non-reporter kalau bangunan punya RAB aktif */}
           {selectedFeature && (
@@ -2866,6 +3198,71 @@ if (showWind && envData?.windSpeed) {
   onSuccess={() => setProgressRefreshKey(k => k + 1)}
 />
 
+
+{/* LIVE STREAMER MODAL */}
+{liveStreamerRoom && (
+  <div className="fixed inset-0 z-[10000] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+    <div className="w-full max-w-lg bg-white dark:bg-[#1a1a2e] rounded-2xl overflow-hidden shadow-2xl border border-gray-200 dark:border-[#2a2a4e]">
+      <div className="flex items-center justify-between p-3 border-b border-gray-200 dark:border-[#2a2a4e]">
+        <div className="flex items-center gap-2">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>
+          </span>
+          <h3 className="font-semibold text-sm text-[#1a1a2e] dark:text-white">Live Streaming</h3>
+        </div>
+        <button
+          onClick={() => {
+            if (confirm('Tutup modal akan menghentikan live. Lanjut?')) {
+              stopLive(liveStreamerRoom);
+            }
+          }}
+          className="w-8 h-8 rounded-lg hover:bg-gray-100 dark:hover:bg-[#2a2a4e] flex items-center justify-center text-gray-500"
+        >
+          <i className="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div className="p-4">
+        <LiveStreamer
+          roomId={liveStreamerRoom}
+          token={session?.accessToken as string}
+          buildingName={selectedFeature?.name}
+          onStop={() => {
+            stopLive(liveStreamerRoom);
+            setLiveStreamerRoom(null);
+          }}
+        />
+      </div>
+    </div>
+  </div>
+)}
+
+{/* LIVE VIEWER MODAL */}
+{liveViewerRoom && (
+  <div className="fixed inset-0 z-[10000] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+    <div className="w-full max-w-lg bg-white dark:bg-[#1a1a2e] rounded-2xl overflow-hidden shadow-2xl border border-gray-200 dark:border-[#2a2a4e]">
+      <div className="flex items-center justify-between p-3 border-b border-gray-200 dark:border-[#2a2a4e]">
+        <h3 className="font-semibold text-sm text-[#1a1a2e] dark:text-white flex items-center gap-2">
+          <i className="fa-solid fa-tower-broadcast text-red-500"></i>
+          Menonton Live
+        </h3>
+        <button
+          onClick={() => setLiveViewerRoom(null)}
+          className="w-8 h-8 rounded-lg hover:bg-gray-100 dark:hover:bg-[#2a2a4e] flex items-center justify-center text-gray-500"
+        >
+          <i className="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div className="p-4">
+        <LiveViewer
+          roomId={liveViewerRoom}
+          token={session?.accessToken as string}
+          onClose={() => setLiveViewerRoom(null)}
+        />
+      </div>
+    </div>
+  </div>
+)}
         {/* FOOTER */}
     <footer className="flex-shrink-0 w-full border-t border-gray-200 dark:border-[#2a2a4e] bg-white dark:bg-[#0f0f23] px-4 py-2">
       <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-gray-500 dark:text-gray-400">

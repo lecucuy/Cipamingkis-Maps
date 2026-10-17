@@ -1,7 +1,13 @@
 // ===== TYPES =====
 export type Role = 'admin' | 'supervisor' | 'tpop' | 'pob' | 'juru' | 'reporter';
 export type SectionKey =
-  | 'info' | 'uploads' | 'progress' | 'finance' | 'activity' | 'security';
+  | 'info'
+  | 'uploads'
+  | 'progress'
+  | 'finance'
+  | 'activity'
+  | 'security'
+  | 'live';
 
 export type FinanceLevel = 'full' | 'approve' | 'request' | null;
 export type ProgressLevel = 'full' | 'update' | 'submit' | null;
@@ -35,10 +41,16 @@ export function getPermissions(role?: string | null): Permissions {
 
 // ===== NAVIGATION =====
 export function visibleSections(role?: string | null): SectionKey[] {
+  const r = normalizeRole(role);
   const p = getPermissions(role);
   const base: SectionKey[] = ['info', 'uploads'];
+
   if (p.progress) base.push('progress');
   if (p.finance) base.push('finance');
+
+  // 🔥 Live streaming — KHUSUS TPOP saja
+  if (r === 'tpop') base.push('live');
+
   base.push('activity', 'security');
   return base;
 }
@@ -69,6 +81,9 @@ export const canUpdateProgress    = (r?: string | null) => {
 export const canSubmitProgress    = (r?: string | null) => getPermissions(r).progress !== null;
 export const canManageTeam        = (r?: string | null) => getPermissions(r).manageTeam;
 export const canViewAuditLog      = (r?: string | null) => getPermissions(r).auditLog;
+
+// 🔥 Live streaming — hanya TPOP
+export const canGoLive            = (r?: string | null) => normalizeRole(r) === 'tpop';
 
 // ===== LABEL & COLOR (untuk UI badge) =====
 export const ROLE_META: Record<Role, { label: string; color: string; icon: string }> = {
