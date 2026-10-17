@@ -164,6 +164,7 @@ export interface RABDetail {
   status: 'draft' | 'berjalan' | 'selesai';
   progress: number;
   created_at: string;
+  is_owner?: boolean;
 }
 
 // ============ API ============
