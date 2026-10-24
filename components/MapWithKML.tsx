@@ -117,12 +117,6 @@ export const CATEGORY_CONFIG: Record<string, any> = {
  // ============ FLOW HELPERS ============
 // Konversi Debit (m³/s) ke Durasi Animasi (Detik) yang Realistis
 // Range: 4s (debit kecil) → 12s (debit sangat kecil), slow & natural
-function debitToDuration(debit: number): number {
-  if (debit <= 0) return 0;
-  // Semakin besar debit → animasi makin cepat, tapi tidak ekstrem
-  const duration = 12 / Math.pow(Math.max(debit, 0.1), 0.30);
-  return Math.max(4, Math.min(12, Number(duration.toFixed(2))));
-}
 
 function debitToColor(debit: number): string {
   if (debit <= 0) return '#00E5FF';
@@ -146,6 +140,18 @@ interface WeatherData {
   rainfall: number;
   condition: 'sunny' | 'cloudy' | 'rainy' | 'stormy';
   location: string;
+}
+
+// ===== UGV STATE =====
+interface UGVRobot {
+  id: string;
+  name: string;
+  lat: number;
+  lon: number;
+  webrtc_url?: string;       // mis. "http://100.64.1.10:8889/ugv/webrtc"
+  status?: 'online' | 'offline' | 'moving';
+  battery?: number | null;
+  last_update?: number;      // timestamp ms
 }
 
 export default function MapWithKML() {
@@ -197,6 +203,7 @@ export default function MapWithKML() {
   const [showAQI, setShowAQI] = useState(false);
   const [showWind, setShowWind] = useState(false);
   const [toolsVisible, setToolsVisible] = useState(true); // untuk collapse tombol
+  const [showLegend, setShowLegend] = useState(false); 
   // Data lingkungan (dummy atau dari API)
   const [envData, setEnvData] = useState<any>(null);
   const [showTemperature, setShowTemperature] = useState(false);
@@ -221,6 +228,10 @@ export default function MapWithKML() {
   const [liveViewerRoom, setLiveViewerRoom] = useState<string | null>(null);
   const [startingLive, setStartingLive] = useState(false);
   const liveLayerRef = useRef<L.LayerGroup | null>(null);
+
+  const [ugvs, setUgvs] = useState<UGVRobot[]>([]);
+const ugvLayerRef = useRef<L.LayerGroup | null>(null);
+const ugvMarkersRef = useRef<Record<string, L.Marker>>({});
 
   // Map: building_id → live room (untuk lookup cepat)
   const liveByBuilding = useMemo(() => {
@@ -610,8 +621,26 @@ useEffect(() => {
     // 🔥 Hashtag khusus Juru Bengkok
     const JURU_BENGKOK_TAG = 'saluranindukcibarusah';
 
+        // 🔥 Deteksi Juru Mengker (konsisten dgn backend)
+    const isJuruMengker = useMemo(() => {
+      const u: any = session?.user;
+      if (normalizeRole(u?.role) !== 'juru') return false;
+      // OPSI A: field khusus
+      if ((u?.juruType || '').toLowerCase() === 'mengker') return true;
+      if ((u?.juru_type || '').toLowerCase() === 'mengker') return true;
+      // OPSI B: dari email / username / full_name
+      const email = (u?.email || '').toLowerCase();
+      const username = (u?.username || '').toLowerCase();
+      const fullName = (u?.name || u?.full_name || '').toLowerCase();
+      return email.includes('mengker') || username.includes('mengker') || fullName.includes('mengker');
+    }, [session]);
 
+    // 🔥 Regex nama polygon khusus Juru Mengker — sama persis dgn backend
+    // Match: "Luasan Sawah BMe 3 Kiri", "Luasan Sawah BME 6 Kanan", dst
+    const JURU_MENGKER_POLYGON_REGEX = /luasan\s*sawah.*?\bb\s*m\s*e\b/i;
     
+
+ 
   // ===== MUSIM TANAM POLYGONS (khusus LUASAN_SAWAH) =====
   const musimTanamPolygons = useMemo(() => {
     let polys = (geoData?.polygons || [])
@@ -624,13 +653,21 @@ useEffect(() => {
         return tags.includes(JURU_BENGKOK_TAG);
       });
     }
+    // 🔥 Kalau Juru Mengker → saring hanya polygon "Luasan Sawah ... BMe ..."
+    else if (isJuruMengker) {
+      polys = polys.filter((p: any) => JURU_MENGKER_POLYGON_REGEX.test(p.name || ''));
+      console.log(
+        '[MusimTanam] Mengker — polygon lolos:',
+        polys.map((p: any) => p.name)
+      );
+    }
 
     return polys.map((p: any) => ({
       name: p.name,
       area_ha: p.area_ha || 0,
       path: p.path,
     }));
-  }, [geoData?.polygons, isJuruBengkok]);
+  }, [geoData?.polygons, isJuruBengkok, isJuruMengker]);
 
 
 
@@ -1237,120 +1274,180 @@ useEffect(() => {
 
     
     // ===== LEGEND (sama seperti sebelumnya, menggunakan L dan CATEGORY_CONFIG) =====
-    const legend = L.control({ position: 'bottomleft' });
-    let legendVisible = true;
-    legend.onAdd = () => {
-      const container = L.DomUtil.create('div', 'legend-container');
-      legendContainerRef.current = container;
-      container.style.position = 'relative';
+// ===== LEGEND — Responsive, start hidden, tidak menutupi menu lain =====
+const legend = L.control({ position: 'bottomleft' });
+let legendVisible = false;
 
-      const div = L.DomUtil.create('div', 'info legend');
-      div.style.background = 'rgba(255,255,255,0.95)';
-      div.style.backdropFilter = 'blur(4px)';
-      div.style.padding = '12px 16px';
-      div.style.borderRadius = '12px';
-      div.style.boxShadow = '0 4px 20px rgba(0,0,0,0.3)';
-      div.style.fontSize = '12px';
-      div.style.fontFamily = 'Inter, sans-serif';
-      div.style.minWidth = '160px';
-      div.style.maxHeight = '350px';
-      div.style.overflowY = 'auto';
-      div.style.border = '1px solid rgba(255,255,255,0.2)';
-      div.style.color = '#1a1a2e';
-      div.style.position = 'relative';
+legend.onAdd = () => {
+    const container = L.DomUtil.create('div', 'legend-container');
+    legendContainerRef.current = container;
+    container.style.position = 'relative';
+  // 🔥 Geser ke atas tools button (mobile: 2 tombol × 40px + gap = ~130px)
+    container.style.marginBottom = window.innerWidth < 640 ? '130px' : '160px';
+    container.style.marginLeft = '0px';
+    // 🔥 Cegah klik legend men-trigger peta (pan/zoom)
+    L.DomEvent.disableClickPropagation(container);
+    L.DomEvent.disableScrollPropagation(container);
 
-      const closeBtn = document.createElement('button');
-      closeBtn.innerHTML = '✕';
-      closeBtn.style.position = 'absolute';
-      closeBtn.style.top = '6px';
-      closeBtn.style.right = '8px';
-      closeBtn.style.background = 'transparent';
-      closeBtn.style.border = 'none';
-      closeBtn.style.fontSize = '14px';
-      closeBtn.style.cursor = 'pointer';
-      closeBtn.style.color = '#888';
-      closeBtn.style.padding = '2px 6px';
-      closeBtn.style.borderRadius = '4px';
-      closeBtn.onclick = (e) => {
-        e.stopPropagation();
-        div.style.display = 'none';
-        legendVisible = false;
-        toggleBtn.style.display = 'flex';
-      };
-
-      const categories = Object.keys(CATEGORY_CONFIG).filter(k => k !== 'default');
-      let html = '<div style="font-weight:700;margin-bottom:10px;font-size:13px;color:#1a1a2e;display:flex;align-items:center;gap:6px;">🧭 Legenda</div>';
-      const pointKeys = categories.filter(k => CATEGORY_CONFIG[k]?.type === 'point');
-      const lineKeys = categories.filter(k => CATEGORY_CONFIG[k]?.type === 'line');
-      const polyKeys = categories.filter(k => CATEGORY_CONFIG[k]?.type === 'polygon');
-      const sorted = [...pointKeys, ...lineKeys, ...polyKeys];
-
-        // ===== KATEGORI YANG DISEMBUNYIKAN DARI LEGENDA =====
-      const hiddenLegendKeys = [
-        'BCB', 'BME', 'BLE', 'BTM', 'BTE', 'BTS',
-        'BPE', 'BPP', 'BRB', 'BCK', 'BPL'
-      ];
-
-      sorted.forEach(key => {
-        if (hiddenLegendKeys.includes(key)) return;
-
-        const cfg = CATEGORY_CONFIG[key];
-        if (!cfg) return;
-        const checked = layerVisibility[key] !== false ? 'checked' : '';
-        const isLine = cfg.type === 'line';
-        const isPoly = cfg.type === 'polygon';
-
-        let displayStyle = '';
-        if (isLine) {
-          displayStyle = `display:inline-block;width:24px;height:4px;background:${cfg.color};border-radius:2px;margin-right:8px;vertical-align:middle;`;
-        } else if (isPoly) {
-          displayStyle = `display:inline-block;width:18px;height:18px;background:${cfg.color};border:2px solid ${cfg.color};border-radius:3px;margin-right:8px;vertical-align:middle;opacity:0.7;`;
-        } else {
-          displayStyle = `display:inline-block;width:14px;height:14px;border-radius:50%;background:${cfg.color};margin-right:8px;vertical-align:middle;box-shadow:0 0 0 2px white, 0 0 0 3px ${cfg.color};`;
-        }
-
-        html += `
-          <div style="display:flex;align-items:center;gap:4px;margin-bottom:5px;cursor:pointer;padding:2px 4px;border-radius:6px;transition:background 0.2s;"
-              onmouseover="this.style.background='rgba(0,0,0,0.05)'"
-              onmouseout="this.style.background='transparent'">
-            <input type="checkbox" id="chk-${key}" ${checked}
-              style="accent-color:${cfg.color};width:15px;height:15px;cursor:pointer;flex-shrink:0;"
-              onchange="window.toggleLayer('${key}')"
-            />
-            <span style="${displayStyle}"></span>
-            <span style="flex:1;font-size:11px;font-weight:500;color:#1a1a2e;">${cfg.label}</span>
-          </div>
-        `;
-      });
-
-      div.innerHTML = html;
-      div.appendChild(closeBtn);
-
-      const toggleBtn = document.createElement('button');
-      toggleBtn.innerHTML = '🧭';
-      toggleBtn.style.display = 'none';
-      toggleBtn.style.position = 'absolute';
-      toggleBtn.style.bottom = '0';
-      toggleBtn.style.left = '0';
-      toggleBtn.style.background = 'rgba(255,255,255,0.95)';
-      toggleBtn.style.backdropFilter = 'blur(4px)';
-      toggleBtn.style.border = 'none';
-      toggleBtn.style.borderRadius = '12px';
-      toggleBtn.style.boxShadow = '0 4px 20px rgba(0,0,0,0.3)';
-      toggleBtn.style.padding = '8px 12px';
-      toggleBtn.style.fontSize = '16px';
-      toggleBtn.style.cursor = 'pointer';
-      toggleBtn.onclick = () => {
-        div.style.display = 'block';
-        toggleBtn.style.display = 'none';
-        legendVisible = true;
-      };
-
-      container.appendChild(div);
-      container.appendChild(toggleBtn);
-      return container;
+    // Posisi: turun dikit di mobile (biar gak tabrak search bar)
+    const updateMargin = () => {
+      container.style.marginTop = window.innerWidth < 640 ? '56px' : '8px';
+      container.style.marginRight = '8px';
     };
-    legend.addTo(map);
+    updateMargin();
+    window.addEventListener('resize', updateMargin);
+    (map as any)._legendResizeCleanup = () => {
+      window.removeEventListener('resize', updateMargin);
+    };
+
+    // ===== PANEL LEGEND =====
+    const div = L.DomUtil.create('div', 'info legend');
+    div.style.cssText = `
+      background: rgba(255,255,255,0.92);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      padding: 12px 16px;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+      font-size: 12px;
+      font-family: Inter, sans-serif;
+      min-width: 160px;
+      max-width: 220px;
+      max-height: 55vh;
+      overflow-y: auto;
+      border: 1px solid rgba(0,0,0,0.06);
+      color: #1a1a2e;
+      position: relative;
+      display: none;
+    `;
+
+    const closeBtn = document.createElement('button');
+    closeBtn.innerHTML = '✕';
+    closeBtn.style.cssText = `
+      position:absolute; top:6px; right:8px;
+      background:transparent; border:none;
+      font-size:14px; cursor:pointer; color:#888;
+      padding:2px 6px; border-radius:4px;
+    `;
+    closeBtn.onclick = (e) => {
+      e.stopPropagation();
+      div.style.display = 'none';
+      toggleBtn.style.display = 'flex';
+      removeOutside();
+    };
+
+    // ===== ISI KATEGORI =====
+    const categories = Object.keys(CATEGORY_CONFIG).filter(k => k !== 'default');
+    let html = '<div style="font-weight:700;margin-bottom:10px;font-size:13px;color:#1a1a2e;display:flex;align-items:center;gap:6px;">🧭 Legenda</div>';
+    const pointKeys = categories.filter(k => CATEGORY_CONFIG[k]?.type === 'point');
+    const lineKeys  = categories.filter(k => CATEGORY_CONFIG[k]?.type === 'line');
+    const polyKeys  = categories.filter(k => CATEGORY_CONFIG[k]?.type === 'polygon');
+    const sorted = [...pointKeys, ...lineKeys, ...polyKeys];
+
+    const hiddenLegendKeys = [
+      'BCB', 'BME', 'BLE', 'BTM', 'BTE', 'BTS',
+      'BPE', 'BPP', 'BRB', 'BCK', 'BPL'
+    ];
+
+    sorted.forEach(key => {
+      if (hiddenLegendKeys.includes(key)) return;
+      const cfg = CATEGORY_CONFIG[key];
+      if (!cfg) return;
+      const checked = layerVisibility[key] !== false ? 'checked' : '';
+      const isLine = cfg.type === 'line';
+      const isPoly = cfg.type === 'polygon';
+
+      let displayStyle = '';
+      if (isLine) {
+        displayStyle = `display:inline-block;width:24px;height:4px;background:${cfg.color};border-radius:2px;margin-right:8px;vertical-align:middle;`;
+      } else if (isPoly) {
+        displayStyle = `display:inline-block;width:18px;height:18px;background:${cfg.color};border:2px solid ${cfg.color};border-radius:3px;margin-right:8px;vertical-align:middle;opacity:0.7;`;
+      } else {
+        displayStyle = `display:inline-block;width:14px;height:14px;border-radius:50%;background:${cfg.color};margin-right:8px;vertical-align:middle;box-shadow:0 0 0 2px white, 0 0 0 3px ${cfg.color};`;
+      }
+
+      html += `
+        <div style="display:flex;align-items:center;gap:4px;margin-bottom:5px;cursor:pointer;padding:2px 4px;border-radius:6px;transition:background 0.2s;"
+            onmouseover="this.style.background='rgba(0,0,0,0.05)'"
+            onmouseout="this.style.background='transparent'">
+          <input type="checkbox" id="chk-${key}" ${checked}
+            style="accent-color:${cfg.color};width:15px;height:15px;cursor:pointer;flex-shrink:0;"
+            onchange="window.toggleLayer('${key}')"
+          />
+          <span style="${displayStyle}"></span>
+          <span style="flex:1;font-size:11px;font-weight:500;color:#1a1a2e;">${cfg.label}</span>
+        </div>
+      `;
+    });
+
+    div.innerHTML = html;
+    div.appendChild(closeBtn);
+
+    // ===== TOGGLE BUTTON — kecil, semi-transparan =====
+    const toggleBtn = document.createElement('button');
+    toggleBtn.innerHTML = '🧭';
+    toggleBtn.title = 'Legenda';
+    toggleBtn.style.cssText = `
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      background: rgba(255,255,255,0.72);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 1px solid rgba(0,0,0,0.08);
+      border-radius: 10px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      font-size: 16px;
+      cursor: pointer;
+      opacity: 0.75;
+      transition: opacity 0.2s ease, transform 0.15s ease;
+    `;
+    toggleBtn.onmouseenter = () => {
+      toggleBtn.style.opacity = '1';
+      toggleBtn.style.transform = 'scale(1.05)';
+    };
+    toggleBtn.onmouseleave = () => {
+      toggleBtn.style.opacity = '0.75';
+      toggleBtn.style.transform = 'scale(1)';
+    };
+    toggleBtn.onclick = (e) => {
+      e.stopPropagation();
+      div.style.display = 'block';
+      toggleBtn.style.display = 'none';
+      attachOutside();
+    };
+
+    // ===== AUTO-CLOSE SAAT KLIK DI LUAR =====
+    let outsideAttached = false;
+    const outsideHandler = (e: MouseEvent) => {
+      if (!container.contains(e.target as Node)) {
+        div.style.display = 'none';
+        toggleBtn.style.display = 'flex';
+        removeOutside();
+      }
+    };
+    const attachOutside = () => {
+      if (outsideAttached) return;
+      setTimeout(() => {
+        document.addEventListener('click', outsideHandler);
+        outsideAttached = true;
+      }, 50);
+    };
+    const removeOutside = () => {
+      if (!outsideAttached) return;
+      document.removeEventListener('click', outsideHandler);
+      outsideAttached = false;
+    };
+    (map as any)._legendOutsideCleanup = removeOutside;
+
+    container.appendChild(div);
+    container.appendChild(toggleBtn);
+    return container;
+  };
+
+  legend.addTo(map);
 
     // Resize handling
     const resizeMap = () => { if (mapRef.current) mapRef.current.invalidateSize(); };
@@ -1372,15 +1469,23 @@ useEffect(() => {
 
   initMap();
 
-  // Cleanup
+ // Cleanup
   return () => {
-    if (mapRef.current) {
-      mapRef.current.remove();
-      mapRef.current = null;
-    }
-  };
-}, [loading, error, L]); // <-- tambahkan L sebagai dependensi
-
+      const m = mapRef.current as any;
+      if (m?._legendResizeCleanup) {
+        m._legendResizeCleanup();
+        delete m._legendResizeCleanup;
+      }
+      if (m?._legendOutsideCleanup) {
+        m._legendOutsideCleanup();
+        delete m._legendOutsideCleanup;
+      }
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+  }, [loading, error, L]);
   // ===== TOGGLE LAYER =====
 useEffect(() => {
   window.toggleLayer = (key: string) => {
@@ -1435,13 +1540,16 @@ useEffect(() => {
     };
   }, [mapReady]);
 
-  useEffect(() => {
-    if (!legendContainerRef.current) return;
-    const isMobile = window.innerWidth < 640;
-    const el = legendContainerRef.current;
-    if (isMobile) el.style.display = isPanelOpen ? 'none' : 'block';
-    else el.style.display = 'block';
-  }, [isPanelOpen]);
+useEffect(() => {
+  if (!legendContainerRef.current) return;
+  const isMobile = window.innerWidth < 640;
+  const el = legendContainerRef.current;
+  if (isMobile) {
+    el.style.display = isPanelOpen ? 'none' : 'block';
+  } else {
+    el.style.display = 'block';
+  }
+}, [isPanelOpen]);
 
   useEffect(() => {
   const map = mapRef.current;
@@ -2440,7 +2548,307 @@ if (showWind && envData?.windSpeed) {
     renderData();
   }, [renderData]);
 
-  
+  // ============ UGV LAYER — render marker + WebRTC popup ============
+// ============ UGV LAYER — AUTO-APPEAR saat online ============
+useEffect(() => {
+  const map = mapRef.current;
+  if (!mapReady || !map || !L) return;
+
+  // Cleanup layer lama
+  if (ugvLayerRef.current) {
+    map.removeLayer(ugvLayerRef.current);
+    ugvLayerRef.current = null;
+    ugvMarkersRef.current = {};
+  }
+
+  // ✅ Hanya render UGV yang tidak offline
+  const onlineUgvs = ugvs.filter(
+    (u) => u.status !== 'offline' && typeof u.lat === 'number' && typeof u.lon === 'number'
+  );
+
+  if (onlineUgvs.length === 0) return;
+
+  // Inject style sekali
+  if (!document.getElementById('ugv-marker-style')) {
+    const style = document.createElement('style');
+    style.id = 'ugv-marker-style';
+    style.textContent = `
+      @keyframes ugv-pulse {
+        0%, 100% { transform: scale(1); box-shadow: 0 0 0 4px rgba(0,200,255,0.35), 0 4px 16px rgba(0,200,255,0.5); }
+        50%      { transform: scale(1.08); box-shadow: 0 0 0 10px rgba(0,200,255,0.15), 0 4px 24px rgba(0,200,255,0.8); }
+      }
+      @keyframes ugv-ring {
+        0%   { transform: scale(0.6); opacity: 1; }
+        100% { transform: scale(2.4); opacity: 0; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  const group = L.layerGroup();
+
+  onlineUgvs.forEach((ugv) => {
+    const webrtc = ugv.webrtc_url || '';
+
+    const icon = L.divIcon({
+      className: 'ugv-marker-div',
+      html: `
+        <div style="position:relative;text-align:center;">
+          <div style="position:absolute;top:0;left:50%;transform:translateX(-50%);
+            width:44px;height:44px;border-radius:50%;
+            background:rgba(0,200,255,0.35);
+            animation:ugv-ring 1.8s ease-out infinite;pointer-events:none;"></div>
+          <div style="
+            position:relative;width:44px;height:44px;border-radius:50%;
+            background:linear-gradient(135deg,#00c8ff,#0077ff);
+            border:3px solid white;
+            box-shadow:0 0 0 3px rgba(0,200,255,0.4),0 6px 20px rgba(0,200,255,0.6);
+            display:flex;align-items:center;justify-content:center;
+            animation:ugv-pulse 1.8s ease-in-out infinite;
+            cursor:pointer;
+          ">
+            <i class="fa-solid fa-robot" style="color:white;font-size:20px;"></i>
+          </div>
+          <div style="
+            font-size:9px;font-weight:700;color:white;
+            background:#00c8ff;
+            padding:2px 8px;border-radius:10px;margin-top:4px;
+            white-space:nowrap;max-width:100px;overflow:hidden;text-overflow:ellipsis;
+            box-shadow:0 2px 8px rgba(0,0,0,0.3);
+            border:1px solid rgba(255,255,255,0.5);
+          ">${ugv.name}</div>
+        </div>
+      `,
+      iconSize: [44, 68],
+      iconAnchor: [22, 34],
+      popupAnchor: [0, -34],
+    });
+
+    const marker = L.marker([ugv.lat, ugv.lon], {
+      icon,
+      zIndexOffset: 900,
+    });
+
+    // Popup — video live
+    const popupHtml = `
+      <div style="font-family:Inter;min-width:300px;">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+          <span style="
+            background:#00c8ff;color:white;font-size:9px;font-weight:800;
+            padding:2px 8px;border-radius:10px;
+            display:inline-flex;align-items:center;gap:3px;
+          ">
+            <span style="width:5px;height:5px;border-radius:50%;background:white;"></span>
+            LIVE
+          </span>
+          ${ugv.battery != null ? `<span style="font-size:10px;color:#666;">🔋 ${ugv.battery}%</span>` : ''}
+        </div>
+
+        <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">
+          🤖 ${ugv.name}
+        </h4>
+        <p style="margin:0 0 8px 0;font-size:11px;color:#666;">
+          📍 ${ugv.lat.toFixed(5)}, ${ugv.lon.toFixed(5)}
+        </p>
+
+        ${webrtc ? `
+          <div style="position:relative;width:100%;aspect-ratio:16/9;
+            background:#000;border-radius:8px;overflow:hidden;">
+            <iframe
+              src="${webrtc}"
+              style="width:100%;height:100%;border:none;"
+              allow="autoplay; fullscreen; picture-in-picture"
+              scrolling="no"
+            ></iframe>
+          </div>
+          <p style="margin:6px 0 0 0;font-size:9px;color:#94a3b8;text-align:center;">
+            Live video via Tailscale (WebRTC)
+          </p>
+        ` : `
+          <div style="
+            width:100%;aspect-ratio:16/9;background:#f1f5f9;
+            border-radius:8px;display:flex;align-items:center;justify-content:center;
+            color:#94a3b8;font-size:11px;
+          ">
+            <div style="text-align:center;">
+              <i class="fa-solid fa-video-slash" style="font-size:20px;display:block;margin-bottom:4px;"></i>
+              WebRTC URL belum diset
+            </div>
+          </div>
+        `}
+      </div>
+    `;
+
+    marker.bindPopup(popupHtml, { maxWidth: 340 });
+
+    ugvMarkersRef.current[ugv.id] = marker;
+    group.addLayer(marker);
+  });
+
+  group.addTo(map);
+  ugvLayerRef.current = group;
+
+  return () => {
+    if (ugvLayerRef.current && mapRef.current) {
+      mapRef.current.removeLayer(ugvLayerRef.current);
+      ugvLayerRef.current = null;
+      ugvMarkersRef.current = {};
+    }
+  };
+}, [ugvs, mapReady, L]);   // ← hapus showUGVLayer dari deps
+
+// ============ UGV WEBSOCKET — update posisi real-time ============
+useEffect(() => {
+  if (!session?.accessToken) return; // hanya user login
+
+  const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'wss://api.cipamingkis.com';
+  const ws = new WebSocket(`${WS_URL}/ws/frontend`);
+
+  ws.onopen = () => {
+    console.log('[UGV WS] connected');
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      // Format: { type: "ugv_position", ugv_id, lat, lon, battery?, status? }
+      if (msg.type === 'ugv_position' && msg.ugv_id) {
+        setUgvs((prev) => {
+          const existing = prev.find((u) => u.id === msg.ugv_id);
+          if (existing) {
+            return prev.map((u) =>
+              u.id === msg.ugv_id
+                ? {
+                    ...u,
+                    lat: msg.lat,
+                    lon: msg.lon,
+                    battery: msg.battery ?? u.battery,
+                    status: msg.status ?? 'online',
+                    last_update: Date.now(),
+                  }
+                : u
+            );
+          }
+          // UGV baru terdeteksi
+          return [
+            ...prev,
+            {
+              id: msg.ugv_id,
+              name: msg.name || msg.ugv_id,
+              lat: msg.lat,
+              lon: msg.lon,
+              webrtc_url: msg.webrtc_url,
+              battery: msg.battery ?? null,
+              status: 'online',
+              last_update: Date.now(),
+            },
+          ];
+        });
+      }
+      // Handle event lain jika perlu (status, disconnect, dll)
+      if (msg.type === 'ugv_offline' && msg.ugv_id) {
+        setUgvs((prev) =>
+          prev.map((u) =>
+            u.id === msg.ugv_id ? { ...u, status: 'offline' } : u
+          )
+        );
+      }
+    } catch (e) {
+      console.warn('[UGV WS] parse error:', e);
+    }
+  };
+
+  ws.onerror = () => console.warn('[UGV WS] error');
+  ws.onclose = () => console.log('[UGV WS] disconnected');
+
+  // Heartbeat biar tidak dianggap idle oleh proxy
+  const pingInterval = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'ping', t: Date.now() }));
+    }
+  }, 25_000);
+
+  return () => {
+    clearInterval(pingInterval);
+    ws.close();
+  };
+}, [session?.accessToken]);
+
+
+// ============ UGV — update posisi tanpa rebuild ============
+useEffect(() => {
+  if (!mapReady) return;
+  ugvs.forEach((ugv) => {
+    const marker = ugvMarkersRef.current[ugv.id];
+    if (marker && typeof ugv.lat === 'number' && typeof ugv.lon === 'number') {
+      marker.setLatLng([ugv.lat, ugv.lon]);
+    }
+  });
+}, [ugvs, mapReady]);
+
+
+// ============ UGV — initial load via REST (opsional) ============
+useEffect(() => {
+  if (!session?.accessToken) return;
+
+  const fetchUgvs = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/ugv/list`, {
+        headers: { Authorization: `Bearer ${session.accessToken}` },
+      });
+      // Response: { items: [{ id, name, lat, lon, webrtc_url, status, battery }] }
+      const items = (res.data?.items || []).map((u: any) => ({
+        id: u.id,
+        name: u.name || u.id,
+        lat: u.lat,
+        lon: u.lon,
+        webrtc_url: u.webrtc_url,
+        battery: u.battery ?? null,
+        status: u.status || 'online',
+        last_update: Date.now(),
+      }));
+      setUgvs(items);
+    } catch (e: any) {
+      if (e.response?.status !== 404) {
+        console.warn('[UGV] fetch error:', e.message);
+      }
+    }
+  };
+
+  fetchUgvs();
+  // Polling tiap 30s sebagai backup
+  const interval = setInterval(fetchUgvs, 30_000);
+  return () => clearInterval(interval);
+}, [session?.accessToken, API_URL]);
+
+// ============ UGV — auto-focus saat UGV baru muncul ============
+const knownUgvIdsRef = useRef<Set<string>>(new Set());
+
+useEffect(() => {
+  const map = mapRef.current;
+  if (!mapReady || !map) return;
+
+  const online = ugvs.filter((u) => u.status !== 'offline');
+  const newOnes = online.filter((u) => !knownUgvIdsRef.current.has(u.id));
+
+  if (newOnes.length > 0) {
+    const first = newOnes[0];
+    map.flyTo([first.lat, first.lon], Math.max(map.getZoom(), 15), { duration: 1.5 });
+
+    // Notifikasi kecil
+    toast.success(`🤖 ${first.name} terhubung`, {
+      duration: 3000,
+      position: 'bottom-center',
+    });
+
+    newOnes.forEach((u) => knownUgvIdsRef.current.add(u.id));
+  }
+
+  // Bersihkan id yang sudah offline supaya bisa re-toast kalau reconnect
+  ugvs
+    .filter((u) => u.status === 'offline')
+    .forEach((u) => knownUgvIdsRef.current.delete(u.id));
+}, [ugvs, mapReady]);
 
   // ============ RENDER ============
   if (loading) {
@@ -2494,8 +2902,13 @@ if (showWind && envData?.windSpeed) {
         </svg>
                 {/* SEARCH BAR & HASHTAG FILTER */}
        {/* SEARCH BAR & HASHTAG FILTER */}
-<div className={`absolute top-4 w-[90%] max-w-lg 
-  ${isPanelOpen ? 'left-4 translate-x-0 z-[990]' : 'left-1/2 -translate-x-1/2 z-[1000]'}`}>
+    <div
+      className={`absolute top-4 transition-all duration-300
+        ${isPanelOpen
+          ? 'left-4 right-4 z-[990] sm:right-auto sm:w-[calc(100%-440px)] sm:max-w-lg'
+          : 'left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-lg z-[1000]'
+        }`}
+    >
   <div className="relative">
     <input
       type="text"
@@ -2559,15 +2972,18 @@ if (showWind && envData?.windSpeed) {
           )}
         </div>
       </div>{/* Grup Tombol Tools (seperti Google Maps) */}
-      <div className="absolute bottom-24 left-4 z-[990]">
+      <div className="absolute bottom-4 left-4 z-[990] sm:bottom-24">
         <div className="flex flex-col gap-2">
-    {/* Tombol toggle collapse */}
-    <button
-      onClick={() => setToolsVisible(!toolsVisible)}
-      className="w-10 h-10 rounded-full bg-white dark:bg-[#1a1a2e] shadow-lg border border-gray-200 dark:border-[#2a2a4e] flex items-center justify-center text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-[#2a2a4e] transition"
-    >
-      <i className={`fa-solid ${toolsVisible ? 'fa-chevron-left' : 'fa-chevron-right'}`}></i>
-    </button>
+          <button
+            onClick={() => setToolsVisible(!toolsVisible)}
+            className="w-10 h-10 rounded-full bg-white dark:bg-[#1a1a2e] shadow-lg
+              border border-gray-200 dark:border-[#2a2a4e] flex items-center justify-center
+              text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-[#2a2a4e]
+              transition active:scale-95"
+            aria-label={toolsVisible ? 'Sembunyikan tools' : 'Tampilkan tools'}
+          >
+            <i className={`fa-solid ${toolsVisible ? 'fa-chevron-left' : 'fa-chevron-right'}`} />
+          </button>
     
 
     {/* Tombol-tombol mode (muncul jika toolsVisible true) */}
@@ -2617,17 +3033,19 @@ if (showWind && envData?.windSpeed) {
   </div>
 </div>
     {/* LIVE COUNT INDICATOR */}
-{liveRooms.length > 0 && (
-  <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[998] flex items-center gap-2 bg-black/75 backdrop-blur-md px-3 py-1.5 rounded-full shadow-lg border border-red-500/40">
-    <span className="relative flex h-2 w-2">
-      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-      <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
-    </span>
-    <span className="text-[11px] font-bold text-white tracking-wide">
-      {liveRooms.length} LIVE
-    </span>
-  </div>
-)}
+    {liveRooms.length > 0 && (
+      <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[998]
+        flex items-center gap-2 bg-black/75 backdrop-blur-md px-3 py-1.5
+        rounded-full shadow-lg border border-red-500/40 pointer-events-none">
+        <span className="relative flex h-2 w-2">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
+        </span>
+        <span className="text-[11px] font-bold text-white tracking-wide">
+          {liveRooms.length} LIVE
+        </span>
+      </div>
+    )}
         {/* SIDE PANEL */}
           <div
             className={`
@@ -2808,53 +3226,45 @@ if (showWind && envData?.windSpeed) {
             </div>
           )}
 
-          {/* 🔴 MULAI LIVE DI SINI — hanya TPOP + building dalam polygon */}
-          {selectedFeature &&
-          normalizeRole(session?.user?.role) === 'tpop' &&
-          isBuildingInMyPolygon(selectedFeature) &&
-          !liveByBuilding[selectedFeature.name] && (
-            <button
-              onClick={() => startLiveAt(selectedFeature)}
-              disabled={startingLive}
-              className={`w-full py-3 rounded-xl text-sm font-semibold text-white transition flex items-center justify-center gap-2 shadow-lg ${
-                startingLive
-                  ? 'bg-gray-400 cursor-wait'
-                  : 'bg-gradient-to-r from-red-500 to-rose-600 hover:opacity-95 shadow-red-500/40'
-              }`}
-            >
-              <i className={`fa-solid ${startingLive ? 'fa-spinner fa-spin' : 'fa-video'}`}></i>
-              {startingLive ? 'Memulai Live...' : 'Mulai Live di Sini'}
-            </button>
-          )}
+{/* 🔴 MULAI LIVE DI SINI — hanya TPOP + building dalam polygon */}
+{selectedFeature &&
+  normalizeRole(session?.user?.role) === 'tpop' &&
+  isBuildingInMyPolygon(selectedFeature) &&
+  !liveByBuilding[selectedFeature.name] && (
+    <button
+      onClick={() => startLiveAt(selectedFeature)}
+      disabled={startingLive}
+      className={`w-full py-3 rounded-xl text-sm font-semibold text-white transition flex items-center justify-center gap-2 shadow-lg ${
+        startingLive
+          ? 'bg-gray-400 cursor-wait'
+          : 'bg-gradient-to-r from-red-500 to-rose-600 hover:opacity-95 shadow-red-500/40'
+      }`}
+    >
+      <i className={`fa-solid ${startingLive ? 'fa-spinner fa-spin' : 'fa-video'}`}></i>
+      {startingLive ? 'Memulai Live...' : 'Mulai Live di Sini'}
+    </button>
+  )}
 
       {/* Sudah ada live di building ini (bukan punya user) */}
       {selectedFeature &&
-      liveByBuilding[selectedFeature.name] &&
-      !liveByBuilding[selectedFeature.name].is_mine && (
-        <button
-          onClick={() => setLiveViewerRoom(liveByBuilding[selectedFeature.name].room_id)}
-          className="w-full py-3 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-500 to-rose-600 hover:opacity-95 flex items-center justify-center gap-2 shadow-lg shadow-red-500/40"
-        >
-          <i className="fa-solid fa-play"></i>
-          Tonton Live di Sini
-        </button>
-      )}{/* 🔴 MULAI LIVE DI SINI — hanya TPOP + building dalam polygon */}
-      {selectedFeature &&
-      normalizeRole(session?.user?.role) === 'tpop' &&
-      isBuildingInMyPolygon(selectedFeature) &&
-      !liveByBuilding[selectedFeature.name] && (
-        <button
-          onClick={() => startLiveAt(selectedFeature)}
-          disabled={startingLive}
-          className={`w-full py-3 rounded-xl text-sm font-semibold text-white transition flex items-center justify-center gap-2 shadow-lg ${
-            startingLive
-              ? 'bg-gray-400 cursor-wait'
-              : 'bg-gradient-to-r from-red-500 to-rose-600 hover:opacity-95 shadow-red-500/40'
-          }`}
-        >
-          <i className={`fa-solid ${startingLive ? 'fa-spinner fa-spin' : 'fa-video'}`}></i>
-          {startingLive ? 'Memulai Live...' : 'Mulai Live di Sini'}
-        </button>
+        liveByBuilding[selectedFeature.name] &&
+        !liveByBuilding[selectedFeature.name].is_mine && (
+          <button
+            onClick={() => setLiveViewerRoom(liveByBuilding[selectedFeature.name].room_id)}
+            className="w-full py-3 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-500 to-rose-600 hover:opacity-95 flex items-center justify-center gap-2 shadow-lg shadow-red-500/40"
+          >
+            <i className="fa-solid fa-play"></i>
+            Tonton Live di Sini
+          </button>
+        )}
+
+      {/* 🔥 RAB PROGRESS */}
+      {selectedFeature && (
+        <RABProgressPanel
+          buildingId={selectedFeature.name}
+          buildingName={selectedFeature.name}
+          onRefresh={() => setProgressRefreshKey((k) => k + 1)}
+        />
       )}
 
       {/* Sudah ada live di building ini (bukan punya user) */}
@@ -3090,9 +3500,11 @@ if (showWind && envData?.windSpeed) {
                   ? 'bg-emerald-500 text-white border-emerald-500'
                   : 'bg-white dark:bg-[#1a1a2e] border-gray-200 dark:border-[#2a2a4e] text-emerald-600 dark:text-emerald-400 hover:bg-gray-100 dark:hover:bg-[#2a2a4e]'
               }`}
-              title={
+             title={
                 isJuruBengkok
                   ? 'Input Musim Tanam (Bengkok — #SaluranIndukCibarusah)'
+                  : isJuruMengker
+                  ? `Input Musim Tanam (Mengker — ${musimTanamPolygons.length} polygon BMe)`
                   : 'Input Musim Tanam (Juru)'
               }
             >

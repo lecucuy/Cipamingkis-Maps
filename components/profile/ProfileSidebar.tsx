@@ -1,14 +1,20 @@
 'use client';
 import { SectionKey } from '@/lib/permissions';
+import { useSession } from 'next-auth/react';
+import { useRouter } from 'next/navigation';
 
 const ITEMS: { key: SectionKey; label: string; icon: string; color: string }[] = [
-  { key: 'info',     label: 'Profil',      icon: 'fa-user',           color: '#00c8ff' },
-  { key: 'uploads',  label: 'Upload Saya', icon: 'fa-images',         color: '#a855f7' },
-  { key: 'progress', label: 'Pekerjaan',   icon: 'fa-list-check',     color: '#10b981' },
-  { key: 'finance',  label: 'Finansial',   icon: 'fa-wallet',         color: '#f59e0b' },
+  { key: 'info',     label: 'Profil',      icon: 'fa-user',              color: '#00c8ff' },
+  { key: 'uploads',  label: 'Upload Saya', icon: 'fa-images',            color: '#a855f7' },
+  { key: 'progress', label: 'Pekerjaan',   icon: 'fa-list-check',        color: '#10b981' },
+  { key: 'finance',  label: 'Finansial',   icon: 'fa-wallet',            color: '#f59e0b' },
   { key: 'activity', label: 'Aktivitas',   icon: 'fa-clock-rotate-left', color: '#ec4899' },
-  { key: 'security', label: 'Keamanan',    icon: 'fa-shield-halved',  color: '#ef4444' },
+  { key: 'security', label: 'Keamanan',    icon: 'fa-shield-halved',     color: '#ef4444' },
 ];
+
+// 🔥 Section yang HANYA untuk Juru / Supervisor / Admin
+const MANAGER_ONLY: SectionKey[] = ['progress', 'finance'];
+const MANAGER_ROLES = ['juru', 'supervisor', 'admin'];
 
 interface Props {
   active: SectionKey;
@@ -19,7 +25,20 @@ interface Props {
 }
 
 export default function ProfileSidebar({ active, onChange, allowed, mobileOpen, onMobileClose }: Props) {
-  const items = ITEMS.filter(i => allowed.includes(i.key));
+  const { data: session } = useSession();
+  const router = useRouter();
+  const role = ((session?.user as any)?.role || '').toLowerCase();
+  const isManager = MANAGER_ROLES.includes(role);
+
+  const items = ITEMS.filter(i =>
+    allowed.includes(i.key) &&
+    (isManager || !MANAGER_ONLY.includes(i.key))
+  );
+
+  const handleBackToMaps = () => {
+    onMobileClose();
+    router.push('/');
+  };
 
   const Nav = (
     <nav className="space-y-1">
@@ -52,13 +71,30 @@ export default function ProfileSidebar({ active, onChange, allowed, mobileOpen, 
     </nav>
   );
 
+  // 🔥 Tombol kembali ke peta — dipakai di desktop & mobile drawer
+  const BackToMaps = (
+    <button
+      onClick={handleBackToMaps}
+      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#1a1a2e] border border-dashed border-gray-200 dark:border-[#2a2a4e] hover:border-[#00c8ff]/40"
+    >
+      <span className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 bg-[#00c8ff]/10 text-[#00c8ff]">
+        <i className="fa-solid fa-map-location-dot text-sm"></i>
+      </span>
+      <span className="truncate">Kembali ke Peta</span>
+      <i className="fa-solid fa-arrow-up-right-from-square text-[10px] ml-auto opacity-40"></i>
+    </button>
+  );
+
   return (
     <>
       {/* Desktop: fixed sidebar */}
       <aside className="hidden lg:block w-64 shrink-0 sticky top-24 self-start">
-        <div className="bg-white dark:bg-[#0f0f23] rounded-2xl border border-gray-200 dark:border-[#2a2a4e] p-3">
+        <div className="bg-white dark:bg-[#0f0f23] rounded-2xl border border-gray-200 dark:border-[#2a2a4e] p-3 space-y-2">
           <p className="text-[10px] uppercase font-semibold text-gray-400 px-3 py-2">Menu</p>
           {Nav}
+          <div className="pt-2 border-t border-gray-100 dark:border-[#2a2a4e]">
+            {BackToMaps}
+          </div>
         </div>
       </aside>
 
@@ -66,7 +102,7 @@ export default function ProfileSidebar({ active, onChange, allowed, mobileOpen, 
       {mobileOpen && (
         <div className="lg:hidden fixed inset-0 z-[2000]">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onMobileClose} />
-          <div className="absolute left-0 top-0 bottom-0 w-72 bg-white dark:bg-[#0f0f23] shadow-2xl p-4 overflow-y-auto animate-[slideInLeft_0.25s_ease]">
+          <div className="absolute left-0 top-0 bottom-0 w-72 bg-white dark:bg-[#0f0f23] shadow-2xl p-4 overflow-y-auto animate-[slideInLeft_0.25s_ease] flex flex-col">
             <div className="flex items-center justify-between mb-3">
               <p className="text-sm font-semibold text-[#1a1a2e] dark:text-white">Menu</p>
               <button
@@ -76,7 +112,10 @@ export default function ProfileSidebar({ active, onChange, allowed, mobileOpen, 
                 <i className="fa-solid fa-xmark"></i>
               </button>
             </div>
-            {Nav}
+            <div className="flex-1">{Nav}</div>
+            <div className="pt-3 mt-3 border-t border-gray-100 dark:border-[#2a2a4e]">
+              {BackToMaps}
+            </div>
           </div>
         </div>
       )}
