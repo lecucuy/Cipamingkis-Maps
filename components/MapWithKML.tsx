@@ -146,12 +146,12 @@ interface WeatherData {
 interface UGVRobot {
   id: string;
   name: string;
-  lat: number;
-  lon: number;
-  webrtc_url?: string;       // mis. "http://100.64.1.10:8889/ugv/webrtc"
+  lat: number | null;
+  lon: number | null;
+  proxy_video_url?: string | null;
   status?: 'online' | 'offline' | 'moving';
   battery?: number | null;
-  last_update?: number;      // timestamp ms
+  last_update?: number;
 }
 
 export default function MapWithKML() {
@@ -306,9 +306,19 @@ const ugvMarkersRef = useRef<Record<string, L.Marker>>({});
   }, [session, API_URL, refreshLiveRooms]);
 
   // Global bridge untuk tombol "Tonton Live" di popup Leaflet
+    // Global bridge untuk tombol "Tonton Live" di popup Leaflet
   useEffect(() => {
     (window as any).__openLive = (roomId: string) => setLiveViewerRoom(roomId);
-    return () => { delete (window as any).__openLive; };
+    
+    // 🔥 Bridge untuk buka full live di tab baru
+    (window as any).__openFullLive = (url: string) => {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    };
+    
+    return () => { 
+      delete (window as any).__openLive; 
+      delete (window as any).__openFullLive;
+    };
   }, []);
 
     // ===== LIVE MARKERS (indikator live di peta) =====
@@ -1273,181 +1283,8 @@ useEffect(() => {
   // Taruh di file terpisah atau di atas component
 
     
-    // ===== LEGEND (sama seperti sebelumnya, menggunakan L dan CATEGORY_CONFIG) =====
-// ===== LEGEND — Responsive, start hidden, tidak menutupi menu lain =====
-const legend = L.control({ position: 'bottomleft' });
-let legendVisible = false;
+   
 
-legend.onAdd = () => {
-    const container = L.DomUtil.create('div', 'legend-container');
-    legendContainerRef.current = container;
-    container.style.position = 'relative';
-  // 🔥 Geser ke atas tools button (mobile: 2 tombol × 40px + gap = ~130px)
-    container.style.marginBottom = window.innerWidth < 640 ? '130px' : '160px';
-    container.style.marginLeft = '0px';
-    // 🔥 Cegah klik legend men-trigger peta (pan/zoom)
-    L.DomEvent.disableClickPropagation(container);
-    L.DomEvent.disableScrollPropagation(container);
-
-    // Posisi: turun dikit di mobile (biar gak tabrak search bar)
-    const updateMargin = () => {
-      container.style.marginTop = window.innerWidth < 640 ? '56px' : '8px';
-      container.style.marginRight = '8px';
-    };
-    updateMargin();
-    window.addEventListener('resize', updateMargin);
-    (map as any)._legendResizeCleanup = () => {
-      window.removeEventListener('resize', updateMargin);
-    };
-
-    // ===== PANEL LEGEND =====
-    const div = L.DomUtil.create('div', 'info legend');
-    div.style.cssText = `
-      background: rgba(255,255,255,0.92);
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-      padding: 12px 16px;
-      border-radius: 12px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
-      font-size: 12px;
-      font-family: Inter, sans-serif;
-      min-width: 160px;
-      max-width: 220px;
-      max-height: 55vh;
-      overflow-y: auto;
-      border: 1px solid rgba(0,0,0,0.06);
-      color: #1a1a2e;
-      position: relative;
-      display: none;
-    `;
-
-    const closeBtn = document.createElement('button');
-    closeBtn.innerHTML = '✕';
-    closeBtn.style.cssText = `
-      position:absolute; top:6px; right:8px;
-      background:transparent; border:none;
-      font-size:14px; cursor:pointer; color:#888;
-      padding:2px 6px; border-radius:4px;
-    `;
-    closeBtn.onclick = (e) => {
-      e.stopPropagation();
-      div.style.display = 'none';
-      toggleBtn.style.display = 'flex';
-      removeOutside();
-    };
-
-    // ===== ISI KATEGORI =====
-    const categories = Object.keys(CATEGORY_CONFIG).filter(k => k !== 'default');
-    let html = '<div style="font-weight:700;margin-bottom:10px;font-size:13px;color:#1a1a2e;display:flex;align-items:center;gap:6px;">🧭 Legenda</div>';
-    const pointKeys = categories.filter(k => CATEGORY_CONFIG[k]?.type === 'point');
-    const lineKeys  = categories.filter(k => CATEGORY_CONFIG[k]?.type === 'line');
-    const polyKeys  = categories.filter(k => CATEGORY_CONFIG[k]?.type === 'polygon');
-    const sorted = [...pointKeys, ...lineKeys, ...polyKeys];
-
-    const hiddenLegendKeys = [
-      'BCB', 'BME', 'BLE', 'BTM', 'BTE', 'BTS',
-      'BPE', 'BPP', 'BRB', 'BCK', 'BPL'
-    ];
-
-    sorted.forEach(key => {
-      if (hiddenLegendKeys.includes(key)) return;
-      const cfg = CATEGORY_CONFIG[key];
-      if (!cfg) return;
-      const checked = layerVisibility[key] !== false ? 'checked' : '';
-      const isLine = cfg.type === 'line';
-      const isPoly = cfg.type === 'polygon';
-
-      let displayStyle = '';
-      if (isLine) {
-        displayStyle = `display:inline-block;width:24px;height:4px;background:${cfg.color};border-radius:2px;margin-right:8px;vertical-align:middle;`;
-      } else if (isPoly) {
-        displayStyle = `display:inline-block;width:18px;height:18px;background:${cfg.color};border:2px solid ${cfg.color};border-radius:3px;margin-right:8px;vertical-align:middle;opacity:0.7;`;
-      } else {
-        displayStyle = `display:inline-block;width:14px;height:14px;border-radius:50%;background:${cfg.color};margin-right:8px;vertical-align:middle;box-shadow:0 0 0 2px white, 0 0 0 3px ${cfg.color};`;
-      }
-
-      html += `
-        <div style="display:flex;align-items:center;gap:4px;margin-bottom:5px;cursor:pointer;padding:2px 4px;border-radius:6px;transition:background 0.2s;"
-            onmouseover="this.style.background='rgba(0,0,0,0.05)'"
-            onmouseout="this.style.background='transparent'">
-          <input type="checkbox" id="chk-${key}" ${checked}
-            style="accent-color:${cfg.color};width:15px;height:15px;cursor:pointer;flex-shrink:0;"
-            onchange="window.toggleLayer('${key}')"
-          />
-          <span style="${displayStyle}"></span>
-          <span style="flex:1;font-size:11px;font-weight:500;color:#1a1a2e;">${cfg.label}</span>
-        </div>
-      `;
-    });
-
-    div.innerHTML = html;
-    div.appendChild(closeBtn);
-
-    // ===== TOGGLE BUTTON — kecil, semi-transparan =====
-    const toggleBtn = document.createElement('button');
-    toggleBtn.innerHTML = '🧭';
-    toggleBtn.title = 'Legenda';
-    toggleBtn.style.cssText = `
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 36px;
-      height: 36px;
-      background: rgba(255,255,255,0.72);
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-      border: 1px solid rgba(0,0,0,0.08);
-      border-radius: 10px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-      font-size: 16px;
-      cursor: pointer;
-      opacity: 0.75;
-      transition: opacity 0.2s ease, transform 0.15s ease;
-    `;
-    toggleBtn.onmouseenter = () => {
-      toggleBtn.style.opacity = '1';
-      toggleBtn.style.transform = 'scale(1.05)';
-    };
-    toggleBtn.onmouseleave = () => {
-      toggleBtn.style.opacity = '0.75';
-      toggleBtn.style.transform = 'scale(1)';
-    };
-    toggleBtn.onclick = (e) => {
-      e.stopPropagation();
-      div.style.display = 'block';
-      toggleBtn.style.display = 'none';
-      attachOutside();
-    };
-
-    // ===== AUTO-CLOSE SAAT KLIK DI LUAR =====
-    let outsideAttached = false;
-    const outsideHandler = (e: MouseEvent) => {
-      if (!container.contains(e.target as Node)) {
-        div.style.display = 'none';
-        toggleBtn.style.display = 'flex';
-        removeOutside();
-      }
-    };
-    const attachOutside = () => {
-      if (outsideAttached) return;
-      setTimeout(() => {
-        document.addEventListener('click', outsideHandler);
-        outsideAttached = true;
-      }, 50);
-    };
-    const removeOutside = () => {
-      if (!outsideAttached) return;
-      document.removeEventListener('click', outsideHandler);
-      outsideAttached = false;
-    };
-    (map as any)._legendOutsideCleanup = removeOutside;
-
-    container.appendChild(div);
-    container.appendChild(toggleBtn);
-    return container;
-  };
-
-  legend.addTo(map);
 
     // Resize handling
     const resizeMap = () => { if (mapRef.current) mapRef.current.invalidateSize(); };
@@ -1472,14 +1309,7 @@ legend.onAdd = () => {
  // Cleanup
   return () => {
       const m = mapRef.current as any;
-      if (m?._legendResizeCleanup) {
-        m._legendResizeCleanup();
-        delete m._legendResizeCleanup;
-      }
-      if (m?._legendOutsideCleanup) {
-        m._legendOutsideCleanup();
-        delete m._legendOutsideCleanup;
-      }
+
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
@@ -2562,9 +2392,23 @@ useEffect(() => {
   }
 
   // ✅ Hanya render UGV yang tidak offline
-  const onlineUgvs = ugvs.filter(
-    (u) => u.status !== 'offline' && typeof u.lat === 'number' && typeof u.lon === 'number'
-  );
+  const DEFAULT_UGV_LAT = -6.42531;
+const DEFAULT_UGV_LON = 107.03924;
+
+const onlineUgvs = ugvs
+  .filter((u) => u.status !== 'offline')
+  .map((u) => {
+    const gpsOk =
+      typeof u.lat === 'number' &&
+      typeof u.lon === 'number' &&
+      !(u.lat === 0 && u.lon === 0);
+    return {
+      ...u,
+      lat: gpsOk ? u.lat : DEFAULT_UGV_LAT,
+      lon: gpsOk ? u.lon : DEFAULT_UGV_LON,
+      _gpsFix: gpsOk,
+    };
+  });
 
   if (onlineUgvs.length === 0) return;
 
@@ -2587,100 +2431,122 @@ useEffect(() => {
 
   const group = L.layerGroup();
 
-  onlineUgvs.forEach((ugv) => {
-    const webrtc = ugv.webrtc_url || '';
+onlineUgvs.forEach((ugv) => {
+  const proxyVideo = (ugv as any).proxy_video_url || '';
+  const hasGpsFix = (ugv as any)._gpsFix !== false;
+  const fullLiveUrl = 'https://ugvilookai.com/';
 
-    const icon = L.divIcon({
-      className: 'ugv-marker-div',
-      html: `
-        <div style="position:relative;text-align:center;">
-          <div style="position:absolute;top:0;left:50%;transform:translateX(-50%);
-            width:44px;height:44px;border-radius:50%;
-            background:rgba(0,200,255,0.35);
-            animation:ugv-ring 1.8s ease-out infinite;pointer-events:none;"></div>
-          <div style="
-            position:relative;width:44px;height:44px;border-radius:50%;
-            background:linear-gradient(135deg,#00c8ff,#0077ff);
-            border:3px solid white;
-            box-shadow:0 0 0 3px rgba(0,200,255,0.4),0 6px 20px rgba(0,200,255,0.6);
-            display:flex;align-items:center;justify-content:center;
-            animation:ugv-pulse 1.8s ease-in-out infinite;
-            cursor:pointer;
-          ">
-            <i class="fa-solid fa-robot" style="color:white;font-size:20px;"></i>
-          </div>
-          <div style="
-            font-size:9px;font-weight:700;color:white;
-            background:#00c8ff;
-            padding:2px 8px;border-radius:10px;margin-top:4px;
-            white-space:nowrap;max-width:100px;overflow:hidden;text-overflow:ellipsis;
-            box-shadow:0 2px 8px rgba(0,0,0,0.3);
-            border:1px solid rgba(255,255,255,0.5);
-          ">${ugv.name}</div>
+  const icon = L.divIcon({
+    className: 'ugv-marker-div',
+    html: `
+      <div style="position:relative;text-align:center;">
+        <div style="position:absolute;top:0;left:50%;transform:translateX(-50%);
+          width:44px;height:44px;border-radius:50%;
+          background:rgba(0,200,255,0.35);
+          animation:ugv-ring 1.8s ease-out infinite;pointer-events:none;"></div>
+        <div style="
+          position:relative;width:44px;height:44px;border-radius:50%;
+          background:linear-gradient(135deg,#00c8ff,#0077ff);
+          border:3px solid white;
+          box-shadow:0 0 0 3px rgba(0,200,255,0.4),0 6px 20px rgba(0,200,255,0.6);
+          display:flex;align-items:center;justify-content:center;
+          animation:ugv-pulse 1.8s ease-in-out infinite;
+          cursor:pointer;
+        ">
+          <i class="fa-solid fa-robot" style="color:white;font-size:20px;"></i>
         </div>
-      `,
-      iconSize: [44, 68],
-      iconAnchor: [22, 34],
-      popupAnchor: [0, -34],
-    });
-
-    const marker = L.marker([ugv.lat, ugv.lon], {
-      icon,
-      zIndexOffset: 900,
-    });
-
-    // Popup — video live
-    const popupHtml = `
-      <div style="font-family:Inter;min-width:300px;">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
-          <span style="
-            background:#00c8ff;color:white;font-size:9px;font-weight:800;
-            padding:2px 8px;border-radius:10px;
-            display:inline-flex;align-items:center;gap:3px;
-          ">
-            <span style="width:5px;height:5px;border-radius:50%;background:white;"></span>
-            LIVE
-          </span>
-          ${ugv.battery != null ? `<span style="font-size:10px;color:#666;">🔋 ${ugv.battery}%</span>` : ''}
-        </div>
-
-        <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">
-          🤖 ${ugv.name}
-        </h4>
-        <p style="margin:0 0 8px 0;font-size:11px;color:#666;">
-          📍 ${ugv.lat.toFixed(5)}, ${ugv.lon.toFixed(5)}
-        </p>
-
-        ${webrtc ? `
-          <div style="position:relative;width:100%;aspect-ratio:16/9;
-            background:#000;border-radius:8px;overflow:hidden;">
-            <iframe
-              src="${webrtc}"
-              style="width:100%;height:100%;border:none;"
-              allow="autoplay; fullscreen; picture-in-picture"
-              scrolling="no"
-            ></iframe>
-          </div>
-          <p style="margin:6px 0 0 0;font-size:9px;color:#94a3b8;text-align:center;">
-            Live video via Tailscale (WebRTC)
-          </p>
-        ` : `
-          <div style="
-            width:100%;aspect-ratio:16/9;background:#f1f5f9;
-            border-radius:8px;display:flex;align-items:center;justify-content:center;
-            color:#94a3b8;font-size:11px;
-          ">
-            <div style="text-align:center;">
-              <i class="fa-solid fa-video-slash" style="font-size:20px;display:block;margin-bottom:4px;"></i>
-              WebRTC URL belum diset
-            </div>
-          </div>
-        `}
+        <div style="
+          font-size:9px;font-weight:700;color:white;
+          background:#00c8ff;
+          padding:2px 8px;border-radius:10px;margin-top:4px;
+          white-space:nowrap;max-width:100px;overflow:hidden;text-overflow:ellipsis;
+          box-shadow:0 2px 8px rgba(0,0,0,0.3);
+          border:1px solid rgba(255,255,255,0.5);
+        ">${ugv.name}</div>
       </div>
-    `;
+    `,
+    iconSize: [44, 68],
+    iconAnchor: [22, 34],
+    popupAnchor: [0, -34],
+  });
 
-    marker.bindPopup(popupHtml, { maxWidth: 340 });
+  const marker = L.marker([ugv.lat as number, ugv.lon as number], {
+    icon,
+    zIndexOffset: 900,
+  });
 
+  const popupHtml = `
+    <div style="font-family:Inter;min-width:300px;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+        <span style="
+          background:#00c8ff;color:white;font-size:9px;font-weight:800;
+          padding:2px 8px;border-radius:10px;
+          display:inline-flex;align-items:center;gap:3px;
+        ">
+          <span style="width:5px;height:5px;border-radius:50%;background:white;"></span>
+          LIVE
+        </span>
+        ${ugv.battery != null ? `<span style="font-size:10px;color:#666;">🔋 ${ugv.battery}%</span>` : ''}
+      </div>
+
+      <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">
+        🤖 ${ugv.name}
+      </h4>
+      <p style="margin:0 0 8px 0;font-size:11px;color:#666;">
+        📍 ${hasGpsFix ? `${(ugv.lat as number).toFixed(5)}, ${(ugv.lon as number).toFixed(5)}` : '<span style="color:#ef4444;font-weight:600;">⚠ GPS belum fix</span>'}
+      </p>
+
+      ${proxyVideo ? `
+        <div style="position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden;margin-bottom:12px;">
+          <img
+            src="${proxyVideo}"
+            style="width:100%;height:100%;object-fit:cover;display:block;"
+            alt="UGV Live"
+          />
+          <div style="position:absolute;top:6px;left:6px;display:flex;align-items:center;gap:4px;background:rgba(0,0,0,0.65);padding:3px 8px;border-radius:10px;pointer-events:none;">
+            <span style="width:6px;height:6px;background:#ef4444;border-radius:50%;display:inline-block;"></span>
+            <span style="color:#fff;font-size:9px;font-weight:800;letter-spacing:0.5px;">LIVE</span>
+          </div>
+        </div>
+        <p style="margin:0 0 12px 0;font-size:9px;color:#94a3b8;text-align:center;">
+         
+        </p>
+      ` : `
+        <div style="width:100%;aspect-ratio:16/9;background:#f1f5f9;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:11px;margin-bottom:12px;">
+          <div style="text-align:center;">
+            <i class="fa-solid fa-video-slash" style="font-size:20px;display:block;margin-bottom:4px;"></i>
+            ${hasGpsFix ? 'Video belum tersedia' : 'UGV belum kirim video_url'}
+          </div>
+        </div>
+      `}
+
+      <button
+        onclick="
+          if (window.__openFullLive) {
+            window.__openFullLive('${fullLiveUrl}');
+          } else {
+            window.open('${fullLiveUrl}', '_blank', 'noopener,noreferrer');
+          }
+        "
+        style="
+          width:100%;padding:11px 10px;
+          background:linear-gradient(135deg,#ef4444,#dc2626);
+          color:#fff;border:none;border-radius:8px;
+          font-size:12px;font-weight:700;cursor:pointer;
+          display:flex;align-items:center;justify-content:center;gap:6px;
+          box-shadow:0 4px 12px rgba(220,38,38,0.35);
+          transition:transform 0.15s ease, box-shadow 0.15s ease;
+          letter-spacing:0.2px;
+        "
+        onmouseover="this.style.transform='translateY(-1px)';this.style.boxShadow='0 6px 16px rgba(220,38,38,0.5)'"
+        onmouseout="this.style.transform='translateY(0)';this.style.boxShadow='0 4px 12px rgba(220,38,38,0.35)'"
+      >
+        🎥 Buka Live Full di ugvilookai.com
+      </button>
+    </div>
+  `;
+
+  marker.bindPopup(popupHtml, { maxWidth: 340 });
     ugvMarkersRef.current[ugv.id] = marker;
     group.addLayer(marker);
   });
@@ -2731,18 +2597,18 @@ useEffect(() => {
           }
           // UGV baru terdeteksi
           return [
-            ...prev,
-            {
-              id: msg.ugv_id,
-              name: msg.name || msg.ugv_id,
-              lat: msg.lat,
-              lon: msg.lon,
-              webrtc_url: msg.webrtc_url,
-              battery: msg.battery ?? null,
-              status: 'online',
-              last_update: Date.now(),
-            },
-          ];
+              ...prev,
+              {
+                id: msg.ugv_id,
+                name: msg.name || msg.ugv_id,
+                lat: typeof msg.lat === 'number' ? msg.lat : null,
+                lon: typeof msg.lon === 'number' ? msg.lon : null,
+                proxy_video_url: msg.proxy_video_url ?? null,
+                battery: msg.battery ?? null,
+                status: 'online',
+                last_update: Date.now(),
+              },
+            ];  
         });
       }
       // Handle event lain jika perlu (status, disconnect, dll)
@@ -2800,9 +2666,9 @@ useEffect(() => {
       const items = (res.data?.items || []).map((u: any) => ({
         id: u.id,
         name: u.name || u.id,
-        lat: u.lat,
-        lon: u.lon,
-        webrtc_url: u.webrtc_url,
+        lat: typeof u.lat === 'number' ? u.lat : null,
+        lon: typeof u.lon === 'number' ? u.lon : null,
+        proxy_video_url: u.proxy_video_url ?? null,
         battery: u.battery ?? null,
         status: u.status || 'online',
         last_update: Date.now(),
@@ -2828,14 +2694,34 @@ useEffect(() => {
   const map = mapRef.current;
   if (!mapReady || !map) return;
 
-  const online = ugvs.filter((u) => u.status !== 'offline');
+  const DEFAULT_UGV_LAT = -6.42531;
+  const DEFAULT_UGV_LON = 107.03924;
+
+  // ✅ Filter UGV online + resolve koordinat (fallback ke Cipamingkis kalau GPS belum fix)
+  const online = ugvs
+    .filter((u) => u.status !== 'offline')
+    .map((u) => {
+      const gpsOk =
+        typeof u.lat === 'number' &&
+        typeof u.lon === 'number' &&
+        !(u.lat === 0 && u.lon === 0);
+      return {
+        ...u,
+        lat: gpsOk ? (u.lat as number) : DEFAULT_UGV_LAT,
+        lon: gpsOk ? (u.lon as number) : DEFAULT_UGV_LON,
+      };
+    });
+
   const newOnes = online.filter((u) => !knownUgvIdsRef.current.has(u.id));
 
   if (newOnes.length > 0) {
     const first = newOnes[0];
-    map.flyTo([first.lat, first.lon], Math.max(map.getZoom(), 15), { duration: 1.5 });
+    map.flyTo(
+      [first.lat as number, first.lon as number],
+      Math.max(map.getZoom(), 15),
+      { duration: 1.5 }
+    );
 
-    // Notifikasi kecil
     toast.success(`🤖 ${first.name} terhubung`, {
       duration: 3000,
       position: 'bottom-center',
@@ -2844,7 +2730,6 @@ useEffect(() => {
     newOnes.forEach((u) => knownUgvIdsRef.current.add(u.id));
   }
 
-  // Bersihkan id yang sudah offline supaya bisa re-toast kalau reconnect
   ugvs
     .filter((u) => u.status === 'offline')
     .forEach((u) => knownUgvIdsRef.current.delete(u.id));
@@ -2971,8 +2856,9 @@ useEffect(() => {
             </div>
           )}
         </div>
-      </div>{/* Grup Tombol Tools (seperti Google Maps) */}
-      <div className="absolute bottom-4 left-4 z-[990] sm:bottom-24">
+      </div>
+      {/* Grup Tombol Tools (seperti Google Maps) */}
+    <div className="absolute bottom-4 left-4 z-[990] sm:bottom-24">
         <div className="flex flex-col gap-2">
           <button
             onClick={() => setToolsVisible(!toolsVisible)}
@@ -2984,24 +2870,31 @@ useEffect(() => {
           >
             <i className={`fa-solid ${toolsVisible ? 'fa-chevron-left' : 'fa-chevron-right'}`} />
           </button>
-    
 
-    {/* Tombol-tombol mode (muncul jika toolsVisible true) */}
     {toolsVisible && (
-      <div className="flex flex-col gap-2 mt-1">
-        
+        <div className="flex flex-col gap-2 mt-1">
+          {showMusimTanam && normalizeRole(session?.user?.role) === 'juru' && (
+          <MusimTanamPanel
+            polygons={musimTanamPolygons}
+            userRole={session?.user?.role}
+            onClose={() => setShowMusimTanam(false)}
+            onSuccess={fetchMusimTanam}
+          />
+        )}
 
+        {/* 🧭 LEGEND BUTTON (BARU) */}
+        <button
+          onClick={() => setShowLegend(!showLegend)}
+          className={`w-10 h-10 rounded-full shadow-lg border flex items-center justify-center transition ${
+            showLegend
+              ? 'bg-purple-500 text-white border-purple-500'
+              : 'bg-white dark:bg-[#1a1a2e] border-gray-200 dark:border-[#2a2a4e] text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2a2a4e]'
+          }`}
+          title="Legenda"
+        >
+          <i className="fa-solid fa-compass"></i>
+        </button>
 
-            
-        {/* 🔥 PANEL MUSIM TANAM — RENDER ACTUAL PANEL */}
-      {showMusimTanam && normalizeRole(session?.user?.role) === 'juru' && (
-        <MusimTanamPanel
-          polygons={musimTanamPolygons}
-          userRole={session?.user?.role}
-          onClose={() => setShowMusimTanam(false)}
-          onSuccess={fetchMusimTanam}
-        />
-      )}
         {/* Terrain */}
         <button
           onClick={toggleTerrain}
@@ -3015,23 +2908,83 @@ useEffect(() => {
           <i className={`fa-solid ${showTerrain ? 'fa-globe' : 'fa-mountain'}`}></i>
         </button>
 
-        {/* Heatmap */}
-        <button
-          onClick={toggleHeatmap}
-          className={`w-10 h-10 rounded-full shadow-lg border flex items-center justify-center transition ${
-            showHeatmap
-              ? 'bg-orange-500 text-white border-orange-500'
-              : 'bg-white dark:bg-[#1a1a2e] border-gray-200 dark:border-[#2a2a4e] text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2a2a4e]'
-          }`}
-          title="Heatmap"
-        >
-          <i className="fa-solid fa-fire"></i>
-        </button>
 
+      </div>
+    )}
+
+    {/* 🧭 LEGEND PANEL (BARU) */}
+    {showLegend && toolsVisible && (
+      <div
+        className="absolute left-full ml-2 bottom-0 w-[200px] max-h-[60vh] overflow-y-auto
+                   bg-white/95 dark:bg-[#1a1a2e]/95 backdrop-blur-xl
+                   rounded-xl shadow-2xl border border-gray-200 dark:border-[#2a2a4e]
+                   p-3 z-[991]"
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-2 pb-2 border-b border-gray-200 dark:border-[#2a2a4e]">
+          <span className="text-xs font-bold text-gray-800 dark:text-white">🧭 Legenda</span>
+          <button
+            onClick={() => setShowLegend(false)}
+            className="w-5 h-5 rounded text-gray-400 hover:text-gray-700 dark:hover:text-white text-xs flex items-center justify-center"
+          >
+            ✕
+          </button>
+        </div>
+
+        {(() => {
+          const HIDDEN_LEGEND = ['BCB', 'BME', 'BLE', 'BTM', 'BTE', 'BTS', 'BPE', 'BPP', 'BRB', 'BCK', 'BPL'];
+          const pointKeys = Object.keys(CATEGORY_CONFIG).filter(
+            (k) => CATEGORY_CONFIG[k]?.type === 'point' && k !== 'default' && !HIDDEN_LEGEND.includes(k)
+          );
+          const lineKeys = Object.keys(CATEGORY_CONFIG).filter(
+            (k) => CATEGORY_CONFIG[k]?.type === 'line' && k !== 'default' && !HIDDEN_LEGEND.includes(k)
+          );
+          const polyKeys = Object.keys(CATEGORY_CONFIG).filter(
+            (k) => CATEGORY_CONFIG[k]?.type === 'polygon' && k !== 'default' && !HIDDEN_LEGEND.includes(k)
+          );
+          return [...pointKeys, ...lineKeys, ...polyKeys].map((key) => {
+            const cfg = CATEGORY_CONFIG[key];
+            if (!cfg) return null;
+            const checked = layerVisibility[key] !== false;
+            return (
+              <div
+                key={key}
+                className="flex items-center gap-1.5 py-1 px-1 rounded hover:bg-gray-100 dark:hover:bg-[#2a2a4e]"
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => window.toggleLayer?.(key)}
+                  className="w-3 h-3 cursor-pointer flex-shrink-0"
+                  style={{ accentColor: cfg.color }}
+                />
+                {cfg.type === 'line' ? (
+                  <span className="inline-block w-4 h-1 rounded-sm flex-shrink-0" style={{ background: cfg.color }} />
+                ) : cfg.type === 'polygon' ? (
+                  <span
+                    className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
+                    style={{ background: cfg.color, opacity: 0.7, border: `1px solid ${cfg.color}` }}
+                  />
+                ) : (
+                  <span
+                    className="inline-block w-3 h-3 rounded-full flex-shrink-0"
+                    style={{ background: cfg.color, boxShadow: `0 0 0 2px white, 0 0 0 3px ${cfg.color}` }}
+                  />
+                )}
+                <span className="text-[10px] font-medium text-gray-700 dark:text-gray-200 flex-1">
+                  {cfg.label}
+                </span>
+              </div>
+            );
+          });
+        })()}
       </div>
     )}
   </div>
 </div>
+
+
     {/* LIVE COUNT INDICATOR */}
     {liveRooms.length > 0 && (
       <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[998]
@@ -3567,6 +3520,106 @@ useEffect(() => {
                   <div><p className="text-gray-500 dark:text-gray-400">Hujan</p><p className="font-bold text-[#1a1a2e] dark:text-white">{weather.rainfall} mm</p></div>
                 </div>
               </div>
+
+                          {/* 🔥 BRANDING & COPYRIGHT */}
+            <div className="mt-6 pt-4 border-t border-gray-200 dark:border-[#2a2a4e]">
+
+              {/* Ecosystem Card */}
+              <div className="relative overflow-hidden rounded-xl
+                              bg-gradient-to-br from-[#00c8ff]/10 via-blue-500/5 to-purple-500/10
+                              border border-[#00c8ff]/25 dark:border-[#00c8ff]/30
+                              p-3">
+                {/* Glow effect */}
+                <div className="absolute -top-10 -right-10 w-28 h-28 rounded-full bg-[#00c8ff]/20 blur-3xl pointer-events-none" />
+
+                <div className="relative">
+                  {/* Header */}
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#00c8ff] to-blue-600
+                                    flex items-center justify-center
+                                    shadow-lg shadow-[#00c8ff]/40">
+                      <i className="fa-solid fa-droplet text-white text-sm" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[11px] font-bold text-gray-800 dark:text-white leading-tight truncate">
+                        iLookAi Ecosystem
+                      </p>
+                      <p className="text-[9px] text-[#00c8ff] font-medium leading-tight">
+                        Smart Water Management
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Tagline */}
+                  <p className="text-[9px] text-gray-500 dark:text-gray-400 leading-relaxed mb-2.5">
+                    Platform monitoring & analitik sumber daya air terintegrasi
+                    untuk wilayah Cipamingkis.
+                  </p>
+
+                  {/* Quick Links */}
+                  <div className="flex flex-wrap gap-1.5">
+                    <a
+                      href="https://ugvilookai.com"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md
+                                 bg-white dark:bg-[#0f0f23]
+                                 border border-gray-200 dark:border-[#2a2a4e]
+                                 text-[8px] font-semibold text-gray-700 dark:text-gray-300
+                                 hover:border-[#00c8ff] hover:text-[#00c8ff] transition-colors"
+                    >
+                      <i className="fa-solid fa-robot text-[8px]" />
+                      UGV Live
+                    </a>
+                    <a
+                      href="https://cipamingkis.com"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md
+                                 bg-white dark:bg-[#0f0f23]
+                                 border border-gray-200 dark:border-[#2a2a4e]
+                                 text-[8px] font-semibold text-gray-700 dark:text-gray-300
+                                 hover:border-[#00c8ff] hover:text-[#00c8ff] transition-colors"
+                    >
+                      <i className="fa-solid fa-globe text-[8px]" />
+                      Portal
+                    </a>
+                    <a
+                      href="https://api.cipamingkis.com/docs"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md
+                                 bg-white dark:bg-[#0f0f23]
+                                 border border-gray-200 dark:border-[#2a2a4e]
+                                 text-[8px] font-semibold text-gray-700 dark:text-gray-300
+                                 hover:border-[#00c8ff] hover:text-[#00c8ff] transition-colors"
+                    >
+                      <i className="fa-solid fa-code text-[8px]" />
+                      API
+                    </a>
+                  </div>
+                </div>
+              </div>
+
+              {/* Copyright footer */}
+              <div className="mt-3 text-center space-y-1">
+                <p className="text-[9px] text-gray-400 dark:text-gray-500 flex items-center justify-center gap-1">
+                  <i className="fa-regular fa-copyright text-[8px]" />
+                  <span>2026</span>
+                  <span className="font-semibold text-gray-600 dark:text-gray-300">
+                    iLookAi
+                  </span>
+                  <span>·</span>
+                  <span>All rights reserved</span>
+                </p>
+                <p className="text-[8px] text-gray-400 dark:text-gray-600">
+                  Perum Jasa Tirta II · Cipamingkis
+                </p>
+                <p className="text-[8px] text-gray-400 dark:text-gray-600 font-mono tracking-wider">
+                  v0.1 A (dev)
+                </p>
+              </div>
+            </div>
             </div>
           </div>
         </div>
