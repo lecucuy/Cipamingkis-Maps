@@ -3544,60 +3544,15 @@ useEffect(() => {
                       <p className="text-[11px] font-bold text-gray-800 dark:text-white leading-tight truncate">
                         iLookAi Ecosystem
                       </p>
-                      <p className="text-[9px] text-[#00c8ff] font-medium leading-tight">
-                        Smart Water Management
-                      </p>
+                
                     </div>
                   </div>
 
                   {/* Tagline */}
-                  <p className="text-[9px] text-gray-500 dark:text-gray-400 leading-relaxed mb-2.5">
-                    Platform monitoring & analitik sumber daya air terintegrasi
-                    untuk wilayah Cipamingkis.
-                  </p>
+                 
 
                   {/* Quick Links */}
-                  <div className="flex flex-wrap gap-1.5">
-                    <a
-                      href="https://ugvilookai.com"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md
-                                 bg-white dark:bg-[#0f0f23]
-                                 border border-gray-200 dark:border-[#2a2a4e]
-                                 text-[8px] font-semibold text-gray-700 dark:text-gray-300
-                                 hover:border-[#00c8ff] hover:text-[#00c8ff] transition-colors"
-                    >
-                      <i className="fa-solid fa-robot text-[8px]" />
-                      UGV Live
-                    </a>
-                    <a
-                      href="https://cipamingkis.com"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md
-                                 bg-white dark:bg-[#0f0f23]
-                                 border border-gray-200 dark:border-[#2a2a4e]
-                                 text-[8px] font-semibold text-gray-700 dark:text-gray-300
-                                 hover:border-[#00c8ff] hover:text-[#00c8ff] transition-colors"
-                    >
-                      <i className="fa-solid fa-globe text-[8px]" />
-                      Portal
-                    </a>
-                    <a
-                      href="https://api.cipamingkis.com/docs"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md
-                                 bg-white dark:bg-[#0f0f23]
-                                 border border-gray-200 dark:border-[#2a2a4e]
-                                 text-[8px] font-semibold text-gray-700 dark:text-gray-300
-                                 hover:border-[#00c8ff] hover:text-[#00c8ff] transition-colors"
-                    >
-                      <i className="fa-solid fa-code text-[8px]" />
-                      API
-                    </a>
-                  </div>
+                 
                 </div>
               </div>
 
