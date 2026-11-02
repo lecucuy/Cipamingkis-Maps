@@ -16,6 +16,8 @@ import {
   Legend,
   Filler
 } from 'chart.js';
+import { useMeasurement } from '@/hooks/useMeasurement';
+import { MeasurementOverlay } from '@/components/map/MeasurementOverlay';
 import { Line } from 'react-chartjs-2';
 import BuildingMedia from "@/components/BuildingMedia";
 import 'leaflet/dist/leaflet.css';
@@ -52,6 +54,7 @@ import AddWorkModal from '@/components/progress/AddWorkModal';
 import LiveStreamer from '@/components/live/LiveStreamer';
 import LiveViewer from '@/components/live/LiveViewer';
 import { useLiveRooms, LiveRoom } from '@/hooks/useLiveRooms';
+import { MapLoadingScreen, MapErrorScreen } from '@/components/map/screens';
 
 declare module 'leaflet' {
   function heat(latlngs: any[], options?: any): any;
@@ -230,8 +233,10 @@ export default function MapWithKML() {
   const liveLayerRef = useRef<L.LayerGroup | null>(null);
 
   const [ugvs, setUgvs] = useState<UGVRobot[]>([]);
-const ugvLayerRef = useRef<L.LayerGroup | null>(null);
-const ugvMarkersRef = useRef<Record<string, L.Marker>>({});
+  const ugvLayerRef = useRef<L.LayerGroup | null>(null);
+  const ugvMarkersRef = useRef<Record<string, L.Marker>>({});
+  const selectedKejuronRef = useRef<L.Polyline | null>(null); // 🔥 TAMBAH INI
+
 
   // Map: building_id → live room (untuk lookup cepat)
   const liveByBuilding = useMemo(() => {
@@ -475,10 +480,6 @@ const ugvMarkersRef = useRef<Record<string, L.Marker>>({});
 const isRainfallStation = useCallback((station: any): boolean => {
   return !!station?.name && /curah\s*hujan/i.test(station.name);
 }, []);
-
-useEffect(() => {
-  fetchMusimTanam();
-}, [fetchMusimTanam]);
 
 useEffect(() => {
   fetchMusimTanam();
@@ -1195,9 +1196,9 @@ const toggleTemperature = useCallback(() => {
   const [selectedSempadan, setSelectedSempadan] = useState<any>(null);
   const [selectedSawah, setSelectedSawah] = useState<any>(null);
   const [selectedSaluran, setSelectedSaluran] = useState<any>(null);
-  const [measureMode, setMeasureMode] = useState(false);
-  const [selectedPoints, setSelectedPoints] = useState<any[]>([]);
-  const [measureResult, setMeasureResult] = useState<any>(null);
+  const [showMeasurement, setShowMeasurement] = useState(false);
+  const [mapInstance, setMapInstance] = useState<any>(null);
+  const measurement = useMeasurement({ map: mapInstance, L });
 
   const [layerVisibility, setLayerVisibility] = useState<Record<string, boolean>>({
     "INTAKE": true,
@@ -1255,30 +1256,39 @@ useEffect(() => {
 
   // Fungsi inisialisasi map menggunakan L dari closure
   const initMap = () => {
-    if (!containerRef.current || mapRef.current || !L) return;
-    console.log('🗺️ Init map...');
+  if (!containerRef.current || mapRef.current || !L) return;
+  console.log('🗺️ Init map...');
 
-    const map = L.map(containerRef.current, {
-      zoomControl: false,
-      center: [-6.42531, 107.03924],
-      zoom: 13,
-    });
+  const map = L.map(containerRef.current, {
+    zoomControl: false,
+    center: [-6.42531, 107.03924],
+    zoom: 13,
+    minZoom: 3,
+    maxZoom: 22,          // 🔥 boleh zoom jauh lebih dekat
+  });
 
-    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+  // Tile satelit (Esri World Imagery)
+  L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    {
       attribution: '&copy; Esri',
-    }).addTo(map);
-    // 🔥 TERRAIN LAYER (pakai OpenTopoMap)
-    const terrainLayer = L.tileLayer(
-      'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
-      {
-        attribution: 'Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)',
-        maxZoom: 17,
-      }
-    );
-    (map as any)._terrainLayer = terrainLayer;
+      maxZoom: 22,        // 🔥 supaya user bisa zoom sampai 22
+      maxNativeZoom: 19,  // 🔥 tile asli Esri hanya sampai 19 → di atasnya di-scale
+    }
+  ).addTo(map);
 
+  // Terrain layer
+  const terrainLayer = L.tileLayer(
+    'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+    {
+      attribution: 'Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)',
+      maxZoom: 22,
+      maxNativeZoom: 17,   // OpenTopoMap native hanya sampai 17
+    }
+  );
+  (map as any)._terrainLayer = terrainLayer;
 
-    L.control.zoom({ position: 'bottomright' }).addTo(map);
+    
     
   // Taruh di file terpisah atau di atas component
 
@@ -1301,7 +1311,7 @@ useEffect(() => {
 
     mapRef.current = map;
     setMapReady(true);
-    console.log('✅ Map siap!');
+    setMapInstance(map);   // 🔥 TAMBAH
   };
 
   initMap();
@@ -1313,6 +1323,7 @@ useEffect(() => {
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
+        setMapInstance(null);
       }
     };
   }, [loading, error, L]);
@@ -1479,7 +1490,10 @@ useEffect(() => {
     console.log('📊 Render data...');
 
     // Hapus semua layer non-tile/control
+    // Hapus semua layer non-tile/control
+// 🔥 JANGAN hapus layer milik useMeasurement
     map.eachLayer((l: any) => {
+      if (l._isMeasurement) return; // ← SKIP measurement layers
       if (!(l instanceof L.TileLayer) &&
           !(l instanceof L.Control) &&
           !(l instanceof L.Control.Zoom) &&
@@ -1488,7 +1502,7 @@ useEffect(() => {
       }
     });
     layerGroupsRef.current = {};
-
+    selectedKejuronRef.current = null;
     const points = filteredPoints;
     const lines = filteredLines;
     const polygons = filteredPolygons;
@@ -1838,15 +1852,29 @@ useEffect(() => {
 
             // ===== CASE 1: SALURAN MATI (Tanpa Animasi Aliran) =====
             if (isDeadCanal) {
+              // 1. Garis visual — JANGAN interactive
               const base = L.polyline(line.path, {
-                color: '#64748B', // Warna abu-abu / mati
+                color: '#64748B',
                 weight: 3,
                 opacity: 0.6,
                 lineJoin: 'round',
-                dashArray: '6 6',  // Garis putus-putus penanda tidak aktif
+                dashArray: '6 6',
+                interactive: false,   // ← penting: biar nggak "nyerobot" event
               });
 
-              base.bindPopup(`
+              // 2. 🔥 HIT AREA — garis transparan lebar untuk tap mobile
+              const hit = L.polyline(line.path, {
+                color: '#000000',
+                weight: 24,           // ~24px, nyaman untuk jari
+                opacity: 0,
+                lineJoin: 'round',
+                lineCap: 'round',
+                interactive: true,
+                // ⚠️ JANGAN pakai dashArray di hit area — kalau di-dash, gap-nya nggak bisa diklik!
+              });
+
+              // Popup & handler dipasang di HIT, bukan di base
+              hit.bindPopup(`
                 <div style="font-family:Inter;min-width:180px;">
                   <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Saluran'}</h4>
                   <p style="margin:0;font-size:11px;color:#666;">${cfg.label}</p>
@@ -1857,13 +1885,26 @@ useEffect(() => {
                 </div>
               `);
 
-              base.on('click', () => {
+              // Hover feedback (opsional, tetap enak dilihat di desktop)
+              hit.on('mouseover', () => {
+                base.setStyle({ weight: 5, opacity: 1 });
+                document.body.style.cursor = 'pointer';
+              });
+              hit.on('mouseout', () => {
+                base.setStyle({ weight: 3, opacity: 0.6 });
+                document.body.style.cursor = '';
+              });
+
+              hit.on('click', () => {
                 setSelectedSaluran({ name: line.name || 'Saluran', length: line.length || 0 });
                 if (!isPanelOpen) setIsPanelOpen(true);
               });
 
+              // 3. Gabung jadi satu grup: base (visual) + hit (transparan di atas)
+              const group = L.layerGroup([base, hit]);
+
               if (!lineGroups['SALURAN_DEFAULT']) lineGroups['SALURAN_DEFAULT'] = L.layerGroup();
-              lineGroups['SALURAN_DEFAULT'].addLayer(base);
+              lineGroups['SALURAN_DEFAULT'].addLayer(group);
               return;
             }
 
@@ -1898,6 +1939,7 @@ useEffect(() => {
         lineCap: 'round',
         dashArray: '20, 15, 45, 10, 60, 20',
         className: 'flow-water-mid',
+        interactive: false,   // 🔥 pindah ke hit area
       });
 
       // 3. SURFACE / BUIH PERMUKAAN
@@ -1912,19 +1954,33 @@ useEffect(() => {
         interactive: false,
       });
 
-      // Set CSS var duration ke elemen SVG setelah layer ditambahkan
-      [mid, surface].forEach((layer) => {
-        layer.on('add', () => {
-          const el = (layer as any)._path as SVGPathElement | undefined;
-          if (el) {
-            el.style.setProperty('--fd', `${flow.duration}s`);
-            el.dataset.fd = String(flow.duration);
-          }
-        });
-      });
+      // 4. ✨ HIT AREA — garis transparan lebar untuk klik yang nyaman
+  const hit = L.polyline(line.path, {
+    color: '#000000',
+    weight: Math.max(22, flow.width + 18), // lebar klik ~22px, sangat mudah
+    opacity: 0,                            // tidak kelihatan
+    lineJoin: 'round',
+    lineCap: 'round',
+    interactive: true,                     // 🔥 ini yang menerima klik/hover
+  });
+
+  // ==== HOVER → tebalkan supaya user tahu lagi di atas saluran ====
+  hit.on('mouseover', () => {
+    bed.setStyle({ weight: flow.width + 5, opacity: 1 });
+    mid.setStyle({ weight: flow.width + 2, opacity: 1 });
+    surface.setStyle({ weight: Math.max(2, flow.width - 2), opacity: 1 });
+    document.body.style.cursor = 'pointer';
+  });
+  hit.on('mouseout', () => {
+    bed.setStyle({ weight: flow.width + 2, opacity: 0.8 });
+    mid.setStyle({ weight: flow.width - 1, opacity: 0.9 });
+    surface.setStyle({ weight: Math.max(1, flow.width - 4), opacity: 0.9 });
+    document.body.style.cursor = '';
+  });
+
 
       // Popup & Click Interaksi
-      mid.bindPopup(`
+      hit.bindPopup(`
         <div style="font-family:Inter;min-width:220px;">
           <h4 style="margin:0 0 6px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Saluran'}</h4>
           <p style="margin:0 0 6px 0;font-size:11px;color:#666;">💧 Dialiri dari <b>${flow.from}</b></p>
@@ -1940,66 +1996,158 @@ useEffect(() => {
         </div>
       `);
 
-      mid.on('click', () => {
+      hit.on('click', () => {
         setSelectedSaluran({ name: line.name || 'Saluran', length: line.length || 0, flow });
         if (!isPanelOpen) setIsPanelOpen(true);
       });
 
+      // ==== Set CSS var untuk animasi (mid & surface) ====
+      [mid, surface].forEach((layer) => {
+        layer.on('add', () => {
+          const el = (layer as any)._path as SVGPathElement | undefined;
+          if (el) {
+            el.style.setProperty('--fd', `${flow.duration}s`);
+            el.dataset.fd = String(flow.duration);
+          }
+        });
+      });
+
+
       // Urutan addLayer: bed paling bawah, surface paling atas
-      const group = L.layerGroup([bed, mid, surface]);
+      const group = L.layerGroup([bed, mid, surface, hit]);
       if (!lineGroups['SALURAN_DEFAULT']) lineGroups['SALURAN_DEFAULT'] = L.layerGroup();
       lineGroups['SALURAN_DEFAULT'].addLayer(group);
-
       return;
       }
       // KEJURON
-      if (isKejuron) {
-        const layer = L.polyline(line.path, { color: '#AAAAAA', weight: 1.5, dashArray: '2, 6', opacity: 0.3, lineJoin: 'round' });
-        layer.bindPopup(`
-          <div style="font-family:Inter;min-width:150px;">
-            <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Kejuron'}</h4>
-            <p style="margin:0;font-size:11px;color:#666;">✕ Batas Kejuron</p>
-            ${line.length ? `<p style="margin:4px 0 0 0;font-size:12px;color:#AAAAAA;font-weight:bold;">📏 Panjang: ${formatLength(line.length)}</p>` : ''}
-          </div>
-        `);
-        layer.on('click', () => {
-          if (line.length) {
-            setSelectedSaluran({ name: line.name || 'Kejuron', length: line.length });
-            if (!isPanelOpen) setIsPanelOpen(true);
-          }
-        });
-        if (!lineGroups['KEJURON']) lineGroups['KEJURON'] = L.layerGroup();
-        lineGroups['KEJURON'].addLayer(layer);
-        return;
+      // KEJURON
+if (isKejuron) {
+  const baseStyle: L.PathOptions = {
+    color: '#94A3B8',        // slate-400, lebih kelihatan dari #AAAAAA
+    weight: 2,
+    dashArray: '4, 6',
+    opacity: 0.6,            // naik dari 0.3
+    lineJoin: 'round',
+  };
+  const hoverStyle: L.PathOptions = {
+    color: '#00E5FF',        // cyan terang
+    weight: 3.5,
+    dashArray: '8, 4',
+    opacity: 0.95,
+  };
+  const selectedStyle: L.PathOptions = {
+    color: '#FFA500',        // oranye, beda dari hover
+    weight: 4,
+    dashArray: '10, 4',
+    opacity: 1,
+  };
+
+  const layer = L.polyline(line.path, baseStyle);
+
+  // ===== HOVER =====
+  layer.on('mouseover', (e: any) => {
+    if (!(layer as any)._kejuronSelected) {
+      e.target.setStyle(hoverStyle);
+      e.target.bringToFront();
+    }
+  });
+  layer.on('mouseout', (e: any) => {
+    if (!(layer as any)._kejuronSelected) {
+      e.target.setStyle(baseStyle);
+    }
+  });
+
+  // ===== CLICK → toggle selected =====
+    layer.on('click', () => {
+      // Deselect layer sebelumnya (kalau beda)
+      if (selectedKejuronRef.current && selectedKejuronRef.current !== layer) {
+        (selectedKejuronRef.current as any)._kejuronSelected = false;
+        selectedKejuronRef.current.setStyle(baseStyle);
       }
+
+      if ((layer as any)._kejuronSelected) {
+        // Toggle off — tetap tampilkan hover karena kursor masih di atas
+        (layer as any)._kejuronSelected = false;
+        selectedKejuronRef.current = null;
+        layer.setStyle(hoverStyle);
+      } else {
+        // Toggle on
+        (layer as any)._kejuronSelected = true;
+        selectedKejuronRef.current = layer;
+        layer.setStyle(selectedStyle);
+        layer.bringToFront();
+      }
+
+      if (line.length) {
+        setSelectedSaluran({ name: line.name || 'Kejuron', length: line.length });
+        if (!isPanelOpen) setIsPanelOpen(true);
+      }
+    });
+
+    layer.bindPopup(`
+      <div style="font-family:Inter;min-width:150px;">
+        <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Kejuron'}</h4>
+        <p style="margin:0;font-size:11px;color:#666;">✕ Batas Kejuron</p>
+        ${line.length ? `<p style="margin:4px 0 0 0;font-size:12px;color:#00E5FF;font-weight:bold;">📏 Panjang: ${formatLength(line.length)}</p>` : ''}
+      </div>
+    `);
+
+    if (!lineGroups['KEJURON']) lineGroups['KEJURON'] = L.layerGroup();
+    lineGroups['KEJURON'].addLayer(layer);
+    return;
+  }
 
       // SEMPADAN
       if (isSempadan) {
-        const dash = '4, 4';
-        const mainColor = '#FF0000';
-        const glow = L.polyline(line.path, { color: '#FF0000', weight: 6, dashArray: dash, opacity: 0.05, interactive: false });
-        const outline = L.polyline(line.path, { color: '#FFFFFF', weight: 3, dashArray: dash, opacity: 0.2, interactive: false });
-        const mainLine = L.polyline(line.path, { color: mainColor, weight: 2, dashArray: dash, opacity: 0.15, lineJoin: 'round' });
-        mainLine.on('mouseover', function (e: any) { e.target.setStyle({ weight: 3, opacity: 0.7 }); });
-        mainLine.on('mouseout', function (e: any) { e.target.setStyle({ weight: 2, opacity: 0.15 }); });
-        mainLine.on('click', function (e: any) {
-          const latlngs = e.target.getLatLngs();
-          let totalLength = 0;
-          const segments: { from: number; to: number; distance: number }[] = [];
-          for (let i = 0; i < latlngs.length - 1; i++) {
-            const dist = map.distance(latlngs[i], latlngs[i + 1]);
-            totalLength += dist;
-            segments.push({ from: i + 1, to: i + 2, distance: dist });
-          }
-          setSelectedSempadan({ name: line.name || 'Sempadan', length: totalLength, segments, coordinates: latlngs.map((l: L.LatLng) => [l.lat, l.lng]) });
-          if (!isPanelOpen) setIsPanelOpen(true);
-          map.fitBounds(e.target.getBounds(), { padding: [50, 50] });
-        });
-        const group = L.layerGroup([glow, outline, mainLine]);
-        if (!lineGroups['SEMBADAN']) lineGroups['SEMBADAN'] = L.layerGroup();
-        lineGroups['SEMBADAN'].addLayer(group);
-        return;
-      }
+          const dash = '4, 4';
+          const mainColor = '#FF0000';
+          const glow = L.polyline(line.path, { color: '#FF0000', weight: 6, dashArray: dash, opacity: 0.05, interactive: false });
+          const outline = L.polyline(line.path, { color: '#FFFFFF', weight: 3, dashArray: dash, opacity: 0.2, interactive: false });
+          const mainLine = L.polyline(line.path, { color: mainColor, weight: 2, dashArray: dash, opacity: 0.15, lineJoin: 'round' });
+
+          mainLine.on('mouseover', function (e) { e.target.setStyle({ weight: 3, opacity: 0.7 }); });
+          mainLine.on('mouseout', function (e) { e.target.setStyle({ weight: 2, opacity: 0.15 }); });
+
+          // 🔥 TAMBAHKAN POPUP DENGAN DISCLAIMER
+          mainLine.bindPopup(`
+            <div style="font-family:Inter;min-width:220px;">
+              <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">
+                ${line.name || 'Sempadan Saluran'}
+              </h4>
+              <p style="margin:0 0 8px 0;font-size:11px;color:#666;">🛑 Batas Sempadan</p>
+              ${line.length ? `<p style="margin:0 0 8px 0;font-size:12px;color:#DC2626;font-weight:bold;">📏 Panjang: ${formatLength(line.length)}</p>` : ''}
+
+              <div style="padding:8px;background:#FEF2F2;border:1px solid #FECACA;border-radius:6px;font-size:10px;color:#991B1B;line-height:1.4;">
+                <b>⚠️ Catatan Penting</b><br/>
+                Hasil pengukuran bersifat <b>indikatif</b> dan dapat berubah sesuai kondisi aktual di lapangan. Untuk keputusan teknis/legal, wajib verifikasi ulang oleh petugas berwenang.
+              </div>
+            </div>
+          `);
+
+          mainLine.on('click', function (e) {
+            const latlngs = e.target.getLatLngs();
+            let totalLength = 0;
+            const segments = [];
+            for (let i = 0; i < latlngs.length - 1; i++) {
+              const dist = map.distance(latlngs[i], latlngs[i + 1]);
+              totalLength += dist;
+              segments.push({ from: i + 1, to: i + 2, distance: dist });
+            }
+            setSelectedSempadan({
+              name: line.name || 'Sempadan',
+              length: totalLength,
+              segments,
+              coordinates: latlngs.map((l) => [l.lat, l.lng]),
+            });
+            if (!isPanelOpen) setIsPanelOpen(true);
+            map.fitBounds(e.target.getBounds(), { padding: [50, 50] });
+          });
+
+          const group = L.layerGroup([glow, outline, mainLine]);
+          if (!lineGroups['SEMBADAN']) lineGroups['SEMBADAN'] = L.layerGroup();
+          lineGroups['SEMBADAN'].addLayer(group);
+          return;
+        }
 
       // GARIS LAIN
       let color = cfg.color, weight = 3, dashArray = 'none', opacity = 0.95;
@@ -2059,134 +2207,110 @@ useEffect(() => {
 // Ambil semua ID bendung
 
 
-    points.forEach((point: any, idx: number) => {
-      if (!point || typeof point.lat !== 'number' || typeof point.lon !== 'number') return;
-      loadBuildingMedia(point.name);
-      const media = buildingMedia[point.name] || [];
-      const icon = getMarkerIcon(point, media);
-      const category = point.category || 'default';
-      const cfg = CATEGORY_CONFIG[category] || CATEGORY_CONFIG['default'];
+points.forEach((point: any, idx: number) => {
+  if (!point || typeof point.lat !== 'number' || typeof point.lon !== 'number') return;
+  loadBuildingMedia(point.name);
+  const media = buildingMedia[point.name] || [];
+  const icon = getMarkerIcon(point, media);
+  const category = point.category || 'default';
+  const cfg = CATEGORY_CONFIG[category] || CATEGORY_CONFIG['default'];
 
-      const marker = L.marker([point.lat, point.lon], { icon })
-        .bindPopup(`
-          <div style="min-width:180px;font-family:Inter;">
-            <h3 style="font-weight:600;font-size:14px;margin:0 0 4px 0;color:#1a1a2e;">${point.name}</h3>
-            <p style="font-size:11px;color:#999;font-family:monospace;margin:0 0 4px 0;">${point.lat.toFixed(5)}, ${point.lon.toFixed(5)}</p>
-            <p style="font-size:10px;color:${cfg.color};margin:0;font-weight:500;">🏷️ ${cfg.label}</p>
-          </div>
-        `)
+  const marker = L.marker([point.lat, point.lon], { icon })
+    .bindPopup(`
+      <div style="min-width:180px;font-family:Inter;">
+        <h3 style="font-weight:600;font-size:14px;margin:0 0 4px 0;color:#1a1a2e;">${point.name}</h3>
+        <p style="font-size:11px;color:#999;font-family:monospace;margin:0 0 4px 0;">${point.lat.toFixed(5)}, ${point.lon.toFixed(5)}</p>
+        <p style="font-size:10px;color:${cfg.color};margin:0;font-weight:500;">🏷️ ${cfg.label}</p>
+      </div>
+    `)
+    .on('click', () => {
+      setActiveStation(point);
+      setActiveIdx(idx);
+      setSelectedFeature(point);
 
-        
-        .on('click', () => {
-          console.log('🔍 Session user:', session?.user);
-          console.log('📌 Lat:', session?.user?.lat, 'Lon:', session?.user?.lon);
-          if (measureMode) {
-            if (selectedPoints.length === 0) {
-              setSelectedPoints([{ lat: point.lat, lng: point.lon, name: point.name }]);
-              L.popup().setLatLng([point.lat, point.lon]).setContent('📍 Titik 1 (klik titik lain untuk mengukur)').openOn(map);
-            } else if (selectedPoints.length === 1) {
-              const p1 = selectedPoints[0];
-              const p2 = { lat: point.lat, lng: point.lon, name: point.name };
-              const from = turf.point([p1.lng, p1.lat]);
-              const to = turf.point([p2.lng, p2.lat]);
-              const distance = turf.distance(from, to, { units: 'meters' });
-              setMeasureResult({ distance, from: p1.name, to: p2.name });
-              setSelectedPoints([]);
-              setMeasureMode(false);
-              const line = L.polyline([[p1.lat, p1.lng], [p2.lat, p2.lng]], { color: '#FF6B6B', weight: 3, dashArray: '5, 10' }).addTo(map);
-              setTimeout(() => map.removeLayer(line), 5000);
-              if (!isPanelOpen) setIsPanelOpen(true);
+      const role = normalizeRole(session?.user?.role);
+
+      // ===== REPORTER: curah hujan (bangunan terdekat) =====
+      const isCHBuilding = /curah\s*hujan/i.test(point.name);
+
+      // A. Bangunan CURAH HUJAN
+      if (isCHBuilding) {
+        // Reporter: cek bangunan terdekat
+        if (role === 'reporter' && canReportCurahHujan(session?.user?.role)) {
+          const reporterLat = session?.user?.lat;
+          const reporterLon = session?.user?.lon;
+          if (reporterLat && reporterLon) {
+            const nearest = getNearestBuilding(reporterLat, reporterLon);
+            if (nearest && nearest.name === point.name) {
+              setSelectedBuildingId(point.name);
+              setSelectedBuildingName(point.name);
+              setShowRainfallInput(true);
+            } else {
+              toast.error(`Anda hanya bisa input di bangunan terdekat: ${nearest?.name || 'tidak ditemukan'}`);
+              setShowRainfallInput(false);
+              if (nearest && mapRef.current) mapRef.current.flyTo([nearest.lat, nearest.lon], 15);
             }
           } else {
-          setActiveStation(point);
-            setActiveIdx(idx);
-            setSelectedFeature(point);
-
-            const role = normalizeRole(session?.user?.role);
-
-            // ===== REPORTER: curah hujan (bangunan terdekat) =====
-              const isCHBuilding = /curah\s*hujan/i.test(point.name);
-
-              // A. Bangunan CURAH HUJAN
-              if (isCHBuilding) {
-                // Reporter: cek bangunan terdekat
-                if (role === 'reporter' && canReportCurahHujan(session?.user?.role)) {
-                  const reporterLat = session?.user?.lat;
-                  const reporterLon = session?.user?.lon;
-                  if (reporterLat && reporterLon) {
-                    const nearest = getNearestBuilding(reporterLat, reporterLon);
-                    if (nearest && nearest.name === point.name) {
-                      setSelectedBuildingId(point.name);
-                      setSelectedBuildingName(point.name);
-                      setShowRainfallInput(true);
-                    } else {
-                      toast.error(`Anda hanya bisa input di bangunan terdekat: ${nearest?.name || 'tidak ditemukan'}`);
-                      setShowRainfallInput(false);
-                      if (nearest && mapRef.current) mapRef.current.flyTo([nearest.lat, nearest.lon], 15);
-                    }
-                  } else {
-                    toast.error('Lokasi Anda belum diatur.');
-                    setShowRainfallInput(false);
-                  }
-                  setShowDebitInput(false);
-                }
-                // Polygon role: cek apakah bangunan di dalam polygon
-                else if ((['pob', 'juru', 'supervisor', 'tpop'] as string[]).includes(role ?? '')) {
-                  const poly = session?.user?.polygon as number[][] | undefined;
-                  let inPoly = false;
-                  if (poly && poly.length >= 3) {
-                    try {
-                      const ring = [...poly];
-                      if (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) {
-                        ring.push(ring[0]);
-                      }
-                      inPoly = turf.booleanPointInPolygon(
-                        turf.point([point.lon, point.lat]),
-                        turf.polygon([ring])
-                      );
-                    } catch (e) {
-                      console.warn('polygon check failed:', e);
-                    }
-                  }
-                  if (inPoly) {
-                    setSelectedBuildingId(point.name);
-                    setSelectedBuildingName(point.name);
-                    setShowRainfallInput(true);
-                  } else {
-                    toast.error('Bangunan ini di luar wilayah kerja Anda.');
-                    setShowRainfallInput(false);
-                  }
-                  setShowDebitInput(false);
-                }
-                else {
-                  setShowRainfallInput(false);
-                  setShowDebitInput(false);
-                }
-              }
-              // B. Bangunan BENDUNG (non-curah-hujan)
-              else if (
-                canReportDebit(session?.user?.role) &&
-                isBendungCategory(point.category)
-              ) {
-                setSelectedBendungId(point.name);
-                setSelectedBendungName(point.name);
-                setShowDebitInput(true);
-                setShowRainfallInput(false);
-              }
-              // C. Role lain
-              else {
-                setShowRainfallInput(false);
-                setShowDebitInput(false);
-              }
-
-            loadBuildingMedia(point.name);
-            map.flyTo([point.lat, point.lon], 17, { duration: 1.2 });
+            toast.error('Lokasi Anda belum diatur.');
+            setShowRainfallInput(false);
           }
+          setShowDebitInput(false);
+        }
+        // Polygon role: cek apakah bangunan di dalam polygon
+        else if ((['pob', 'juru', 'supervisor', 'tpop'] as string[]).includes(role ?? '')) {
+          const poly = session?.user?.polygon as number[][] | undefined;
+          let inPoly = false;
+          if (poly && poly.length >= 3) {
+            try {
+              const ring = [...poly];
+              if (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) {
+                ring.push(ring[0]);
+              }
+              inPoly = turf.booleanPointInPolygon(
+                turf.point([point.lon, point.lat]),
+                turf.polygon([ring])
+              );
+            } catch (e) {
+              console.warn('polygon check failed:', e);
+            }
+          }
+          if (inPoly) {
+            setSelectedBuildingId(point.name);
+            setSelectedBuildingName(point.name);
+            setShowRainfallInput(true);
+          } else {
+            toast.error('Bangunan ini di luar wilayah kerja Anda.');
+            setShowRainfallInput(false);
+          }
+          setShowDebitInput(false);
+        }
+        else {
+          setShowRainfallInput(false);
+          setShowDebitInput(false);
+        }
+      }
+      // B. Bangunan BENDUNG (non-curah-hujan)
+      else if (
+        canReportDebit(session?.user?.role) &&
+        isBendungCategory(point.category)
+      ) {
+        setSelectedBendungId(point.name);
+        setSelectedBendungName(point.name);
+        setShowDebitInput(true);
+        setShowRainfallInput(false);
+      }
+      // C. Role lain
+      else {
+        setShowRainfallInput(false);
+        setShowDebitInput(false);
+      }
 
-          })
-
-      if (markerGroups[category]) markerGroups[category].addLayer(marker);
+      loadBuildingMedia(point.name);
+      map.flyTo([point.lat, point.lon], 17, { duration: 1.2 });
     });
+
+  if (markerGroups[category]) markerGroups[category].addLayer(marker);
+});
 
 
 
@@ -2736,35 +2860,21 @@ useEffect(() => {
 }, [ugvs, mapReady]);
 
   // ============ RENDER ============
-  if (loading) {
-    return (
-      <div className="h-screen w-screen flex items-center justify-center bg-gray-50 dark:bg-[#0a0a1a]">
-        <div className="text-center">
-          <div className="w-16 h-16 border-4 border-[#00c8ff] border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-gray-600 dark:text-gray-400">Memuat dashboard...</p>
-        </div>
-      </div>
-    );
-  }
-  if (error) {
-    return (
-      <div className="h-screen w-screen flex items-center justify-center bg-gray-50 dark:bg-[#0a0a1a]">
-        <div className="text-center max-w-md px-4">
-          <div className="text-5xl mb-4">⚠️</div>
-          <p className="text-red-500 font-medium mb-4">{error}</p>
-          <button onClick={() => window.location.reload()} className="px-6 py-2.5 bg-[#00c8ff] text-white rounded-xl font-medium hover:bg-[#00c8ff]/90 transition-all shadow-lg">
-            Muat Ulang
-          </button>
-        </div>
-      </div>
-    );
-  }
+if (loading) {
+  return <MapLoadingScreen />;
+}
 
+if (error) {
+  return (
+    <MapErrorScreen
+      error={error}
+      onRetry={() => window.location.reload()}
+    />
+  );
+}
 
   // ====== FLOW ANIMATION ======
-
   
-
   return (
     <div className={`h-screen w-screen overflow-hidden ${isDark ? 'dark' : ''}`}>
       <div className="relative h-full w-full bg-gray-50 dark:bg-[#0a0a1a]">
@@ -2908,6 +3018,19 @@ useEffect(() => {
           <i className={`fa-solid ${showTerrain ? 'fa-globe' : 'fa-mountain'}`}></i>
         </button>
 
+        {/* 🔥 MEASUREMENT TOOL */}
+        <button
+          onClick={() => setShowMeasurement(v => !v)}
+          className={`w-10 h-10 rounded-full shadow-lg border flex items-center justify-center transition ${
+            showMeasurement
+              ? 'bg-[#00c8ff] text-white border-[#00c8ff]'
+              : 'bg-white dark:bg-[#1a1a2e] border-gray-200 dark:border-[#2a2a4e] text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2a2a4e]'
+          }`}
+          title="Alat Ukur"
+        >
+          <i className="fa-solid fa-ruler-combined" />
+        </button>
+
 
       </div>
     )}
@@ -3039,20 +3162,6 @@ useEffect(() => {
 
             <div className="flex items-center gap-1.5">
               {/* TOMBOL UKUR JARAK */}
-              <button
-                onClick={() => {
-                  setMeasureMode(!measureMode);
-                  if (!measureMode) { setSelectedPoints([]); setMeasureResult(null); }
-                }}
-                className={`px-2.5 py-1.5 text-[10px] font-medium rounded-lg transition-all flex items-center gap-1 ${
-                  measureMode
-                    ? 'bg-red-500 text-white shadow-lg shadow-red-500/30'
-                    : 'bg-gray-200 dark:bg-[#2a2a4e] text-gray-600 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-[#3a3a5e]'
-                }`}
-              >
-                <i className="fa-solid fa-ruler"></i>
-                {measureMode ? 'Mengukur' : 'Ukur'}
-              </button>
 
     
 
@@ -3318,28 +3427,70 @@ useEffect(() => {
             {selectedSempadan && (
               <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-4 animate-fadeIn">
                 <div className="flex items-start justify-between">
-                  <div>
+                  <div className="flex-1">
                     <h4 className="text-sm font-semibold text-red-700 dark:text-red-300 flex items-center gap-2">
                       <i className="fa-solid fa-ruler-combined"></i> Detail Sempadan
                     </h4>
-                    <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 font-medium">{selectedSempadan.name}</p>
+                    <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 font-medium">
+                      {selectedSempadan.name}
+                    </p>
+
                     <div className="mt-2 flex items-baseline gap-2">
-                      <span className="text-2xl font-bold text-red-600 dark:text-red-400">{Math.round(selectedSempadan.length)}</span>
+                      <span className="text-2xl font-bold text-red-600 dark:text-red-400">
+                        {Math.round(selectedSempadan.length)}
+                      </span>
                       <span className="text-xs text-gray-500 dark:text-gray-400">meter (total)</span>
                     </div>
+
                     <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
                       <p className="font-medium mb-1">📏 Rincian Segmen:</p>
                       <div className="max-h-32 overflow-y-auto space-y-0.5">
                         {selectedSempadan.segments.map((seg: any, i: number) => (
-                          <div key={i} className="flex justify-between text-[10px] border-b border-red-100 dark:border-red-800/30 py-0.5">
+                          <div
+                            key={i}
+                            className="flex justify-between text-[10px] border-b border-red-100 dark:border-red-800/30 py-0.5"
+                          >
                             <span>Titik {seg.from} → {seg.to}</span>
-                            <span className="font-mono text-red-600 dark:text-red-400">{Math.round(seg.distance)} m</span>
+                            <span className="font-mono text-red-600 dark:text-red-400">
+                              {Math.round(seg.distance)} m
+                            </span>
                           </div>
                         ))}
                       </div>
                     </div>
+
+                    {/* 🔥 DISCLAIMER PROFESIONAL */}
+                    <div className="mt-3 p-2.5 bg-amber-50 dark:bg-amber-900/20 border-l-4 border-amber-400 dark:border-amber-500 rounded-r-lg">
+                      <div className="flex items-start gap-2">
+                        <i className="fa-solid fa-triangle-exclamation text-amber-500 text-xs mt-0.5 flex-shrink-0"></i>
+                        <div>
+                          <p className="text-[10px] font-bold text-amber-700 dark:text-amber-300 mb-1">
+                            Catatan Penting
+                          </p>
+                          <p className="text-[10px] text-amber-700/80 dark:text-amber-200/80 leading-relaxed">
+                            Hasil pengukuran bersifat <b>indikatif</b> dan dapat{' '}
+                            <b>berubah sewaktu-waktu</b> sesuai kondisi aktual di lapangan.
+                            Perbedaan dapat terjadi akibat perubahan tata guna lahan,
+                            erosi/sedimentasi, pergeseran patok batas, atau intervensi
+                            manusia. Untuk keperluan teknis, perizinan, atau legal,{' '}
+                            <b>wajib dilakukan verifikasi dan pengukuran ulang</b> oleh
+                            petugas berwenang.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Opsional: metadata sumber data */}
+                    <div className="mt-2 flex items-center gap-1 text-[9px] text-gray-400 dark:text-gray-500">
+                      <i className="fa-solid fa-circle-info text-[8px]"></i>
+                      <span>Sumber: Digitalisasi peta · Dapat berbeda dari kondisi riil</span>
+                    </div>
                   </div>
-                  <button onClick={() => setSelectedSempadan(null)} className="w-6 h-6 rounded-full hover:bg-red-200 dark:hover:bg-red-700/40 flex items-center justify-center text-red-500 dark:text-red-400 transition-colors">
+
+                  <button
+                    onClick={() => setSelectedSempadan(null)}
+                    className="w-6 h-6 rounded-full hover:bg-red-200 dark:hover:bg-red-700/40 flex items-center justify-center text-red-500 dark:text-red-400 transition-colors shrink-0"
+                  >
                     <i className="fa-solid fa-xmark"></i>
                   </button>
                 </div>
@@ -3423,25 +3574,6 @@ useEffect(() => {
             )}
 
             {/* HASIL PENGUKURAN JARAK */}
-            {measureResult && (
-              <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-xl p-4 animate-fadeIn">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <h4 className="text-sm font-semibold text-purple-700 dark:text-purple-300 flex items-center gap-2">
-                      <i className="fa-solid fa-arrows-left-right"></i> Jarak Terukur
-                    </h4>
-                    <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">{measureResult.from} → {measureResult.to}</p>
-                    <div className="mt-2 flex items-baseline gap-2">
-                      <span className="text-2xl font-bold text-purple-600 dark:text-purple-400">{measureResult.distance.toFixed(2)}</span>
-                      <span className="text-xs text-gray-500 dark:text-gray-400">meter</span>
-                    </div>
-                  </div>
-                  <button onClick={() => setMeasureResult(null)} className="w-6 h-6 rounded-full hover:bg-purple-200 dark:hover:bg-purple-700/40 flex items-center justify-center text-purple-500 dark:text-purple-400 transition-colors">
-                    <i className="fa-solid fa-xmark"></i>
-                  </button>
-                </div>
-              </div>
-            )}
 
             
         {/* 🔥 PANEL MUSIM TANAM — HANYA JURU */}
@@ -3599,6 +3731,13 @@ useEffect(() => {
           <i className={`fa-solid ${isPanelOpen ? 'fa-chevron-right' : 'fa-chevron-up'} sm:fa-chevron-left`}></i>
         </button>
       </div>
+
+      {/* 🔥 MEASUREMENT OVERLAY */}
+<MeasurementOverlay
+  measurement={measurement}
+  open={showMeasurement}
+  onClose={() => setShowMeasurement(false)}
+/>
       
             {/* ===== MODAL RAB & ADD WORK ===== */}
 <RABUploadModal

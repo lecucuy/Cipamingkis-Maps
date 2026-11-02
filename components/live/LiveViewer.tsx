@@ -1,8 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001';
-const WS_URL = API_URL.replace(/^http/, 'ws');
+import { liveWsUrl } from '@/lib/realtime';
 
 interface Props {
   roomId: string;
@@ -11,8 +9,11 @@ interface Props {
 }
 
 export default function LiveViewer({ roomId, token, onClose }: Props) {
-  const [status, setStatus] = useState<'connecting' | 'live' | 'ended'>('connecting');
+  const [status, setStatus] = useState<'connecting' | 'live' | 'ended'>(
+    'connecting',
+  );
   const [viewers, setViewers] = useState(0);
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const msRef = useRef<MediaSource | null>(null);
@@ -23,12 +24,12 @@ export default function LiveViewer({ roomId, token, onClose }: Props) {
     const video = videoRef.current;
     if (!video) return;
 
-    const ws = new WebSocket(
-      `${WS_URL}/ws/live/${roomId}?role=viewer&token=${encodeURIComponent(token)}`,
-    );
+    // ── Buka WS ke backend realtime (port 5002), path /api/ws/live/:roomId
+    const ws = new WebSocket(liveWsUrl(roomId, 'viewer', token));
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
+    // ── Setup MSE
     const ms = new MediaSource();
     msRef.current = ms;
     video.src = URL.createObjectURL(ms);
@@ -42,7 +43,9 @@ export default function LiveViewer({ roomId, token, onClose }: Props) {
 
       sb.addEventListener('updateend', () => {
         if (queueRef.current.length > 0 && !sb.updating) {
-          try { sb.appendBuffer(queueRef.current.shift()!); } catch {}
+          try {
+            sb.appendBuffer(queueRef.current.shift()!);
+          } catch {}
         }
         if (video.buffered.length > 0) {
           const buffered = video.buffered.end(video.buffered.length - 1);
@@ -53,6 +56,7 @@ export default function LiveViewer({ roomId, token, onClose }: Props) {
       });
     });
 
+    // ── Handle pesan dari server
     ws.onmessage = (ev) => {
       if (typeof ev.data === 'string') {
         try {
@@ -60,19 +64,26 @@ export default function LiveViewer({ roomId, token, onClose }: Props) {
           if (msg.type === 'stream_start') setStatus('live');
           if (msg.type === 'stream_end') setStatus('ended');
           if (msg.type === 'joined') setViewers(msg.viewers || 0);
+          if (msg.type === 'viewers') setViewers(msg.count || 0);
         } catch {}
         return;
       }
+      // binary chunk video
       setStatus('live');
       const sb = sbRef.current;
       if (!sb) return;
       if (sb.updating) queueRef.current.push(ev.data);
       else {
-        try { sb.appendBuffer(ev.data); } catch {}
+        try {
+          sb.appendBuffer(ev.data);
+        } catch {}
       }
     };
 
     ws.onerror = () => setStatus('ended');
+    ws.onclose = () => {
+      setStatus((s) => (s === 'ended' ? s : 'ended'));
+    };
 
     return () => {
       try { ws.close(); } catch {}

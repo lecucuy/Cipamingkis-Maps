@@ -1,12 +1,9 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'react-hot-toast';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001';
-const WS_URL = API_URL.replace(/^http/, 'ws');
+import { liveWsUrl } from '@/lib/realtime';
 
 // Batas buffer WS: kalau >1MB menumpuk, skip frame (jaringan lambat).
-// 1MB ≈ 3 detik video pada 350kbps — cukup buffer, tidak membengkak.
 const MAX_BUFFERED_BYTES = 1_000_000;
 
 interface Props {
@@ -16,7 +13,6 @@ interface Props {
   onStop?: () => void;
 }
 
-// ── Utility: pilih codec yang didukung browser ──
 function pickMimeType(): string {
   if (typeof MediaRecorder === 'undefined') return '';
   const candidates = [
@@ -30,9 +26,10 @@ function pickMimeType(): string {
   return '';
 }
 
-// ── Utility: bitrate adaptif berdasarkan kualitas jaringan ──
 function pickBitrate(): { video: number; audio: number } {
-  const conn: any = typeof navigator !== 'undefined' ? (navigator as any).connection : null;
+  const conn: any = typeof navigator !== 'undefined'
+    ? (navigator as any).connection
+    : null;
   const et = conn?.effectiveType as string | undefined;
   if (conn?.saveData) return { video: 200_000, audio: 24_000 };
   if (et === 'slow-2g' || et === '2g') return { video: 150_000, audio: 24_000 };
@@ -61,41 +58,34 @@ export default function LiveStreamer({ roomId, token, buildingName, onStop }: Pr
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Ref untuk hindari stale closure
   const liveRef = useRef(false);
   const startingRef = useRef(false);
   const onStopRef = useRef(onStop);
 
-  // Sync ref callback supaya cleanup selalu panggil versi terbaru
   useEffect(() => { onStopRef.current = onStop; }, [onStop]);
 
-  // ── Cleanup terpusat ──
-  //   notifyStop=true  → panggil onStop (user klik Stop)
-  //   notifyStop=false → tidak panggil (unmount / server putus / stream_end)
   const cleanup = useCallback((notifyStop: boolean) => {
     const wasLive = liveRef.current;
     liveRef.current = false;
 
-    // 1) Stop timer
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
 
-    // 2) Stop recorder — flush chunk terakhir sebelum WS ditutup
     const rec = recorderRef.current;
     if (rec && rec.state !== 'inactive') {
       try { rec.stop(); } catch {}
     }
     recorderRef.current = null;
 
-    // 3) Stop media tracks
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => { try { t.stop(); } catch {} });
+      streamRef.current.getTracks().forEach(t => {
+        try { t.stop(); } catch {}
+      });
       streamRef.current = null;
     }
 
-    // 4) Null-kan handler WS DULU, baru close — cegah double-callback
     const ws = wsRef.current;
     if (ws) {
       ws.onopen = null;
@@ -106,32 +96,27 @@ export default function LiveStreamer({ roomId, token, buildingName, onStop }: Pr
     }
     wsRef.current = null;
 
-    // 5) Reset state
     setLive(false);
     setSeconds(0);
     setViewers(0);
     startingRef.current = false;
 
-    // 6) Notifikasi parent setelah semua beres
     if (notifyStop && wasLive) {
       onStopRef.current?.();
     }
   }, []);
 
-  // ── Start ──
   const start = useCallback(async () => {
     if (startingRef.current || liveRef.current) return;
     startingRef.current = true;
     setErr(null);
 
-    // Guard browser
     if (!navigator.mediaDevices?.getUserMedia) {
       setErr('Browser tidak mendukung akses kamera. Gunakan Chrome/Firefox terbaru.');
       startingRef.current = false;
       return;
     }
 
-    // Ambil stream kamera + mic
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
@@ -151,14 +136,11 @@ export default function LiveStreamer({ roomId, token, buildingName, onStop }: Pr
     streamRef.current = stream;
     if (videoRef.current) videoRef.current.srcObject = stream;
 
-    // Buka WebSocket
-    const params = new URLSearchParams({ role: 'streamer' });
-    if (token) params.set('token', token);
-    const ws = new WebSocket(`${WS_URL}/ws/live/${roomId}?${params.toString()}`);
+    // ── WS ke backend realtime (port 5002), path /api/ws/live/:roomId
+    const ws = new WebSocket(liveWsUrl(roomId, 'streamer', token));
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
-    // ── WS open: mulai MediaRecorder ──
     ws.onopen = () => {
       const mime = pickMimeType();
       if (!mime) {
@@ -186,7 +168,6 @@ export default function LiveStreamer({ roomId, token, buildingName, onStop }: Pr
         if (!e.data || e.data.size === 0) return;
         const sock = wsRef.current;
         if (!sock || sock.readyState !== WebSocket.OPEN) return;
-        // Jangan kirim kalau buffer WS sudah menumpuk
         if (sock.bufferedAmount > MAX_BUFFERED_BYTES) return;
         try {
           const buf = await e.data.arrayBuffer();
@@ -198,7 +179,6 @@ export default function LiveStreamer({ roomId, token, buildingName, onStop }: Pr
         setErr(`Recorder error: ${e?.error?.message || 'tidak diketahui'}`);
       };
 
-      // Kirim chunk tiap 1 detik (≈1 chunk/detik)
       rec.start(1000);
       recorderRef.current = rec;
 
@@ -210,20 +190,13 @@ export default function LiveStreamer({ roomId, token, buildingName, onStop }: Pr
       timerRef.current = setInterval(() => setSeconds(s => s + 1), 1000);
     };
 
-    // ── Pesan dari server ──
     ws.onmessage = (ev) => {
       if (typeof ev.data !== 'string') return;
       try {
         const msg = JSON.parse(ev.data);
-        if (msg.type === 'joined') {
-          setViewers(msg.viewers || 0);
-        } else if (msg.type === 'viewers') {
-          // 🔧 FIX: backend kirim {"type":"viewers","count":N}
-          setViewers(msg.count || 0);
-        } else if (msg.type === 'stream_end') {
-          // Server minta stop (biasanya parent sudah hit REST /stop)
-          cleanup(false);
-        }
+        if (msg.type === 'joined') setViewers(msg.viewers || 0);
+        else if (msg.type === 'viewers') setViewers(msg.count || 0);
+        else if (msg.type === 'stream_end') cleanup(false);
       } catch {}
     };
 
@@ -234,7 +207,6 @@ export default function LiveStreamer({ roomId, token, buildingName, onStop }: Pr
     ws.onclose = (ev) => {
       const wasLive = liveRef.current;
       cleanup(false);
-      // Kalau sebelumnya live dan close bukan normal → server putus
       if (wasLive && ev.code !== 1000 && ev.code !== 1005) {
         toast.error('Koneksi live terputus');
         onStopRef.current?.();
@@ -242,12 +214,10 @@ export default function LiveStreamer({ roomId, token, buildingName, onStop }: Pr
     };
   }, [roomId, token, cleanup]);
 
-  // ── Cleanup saat unmount / roomId berubah ──
   useEffect(() => {
     return () => { cleanup(false); };
   }, [cleanup]);
 
-  // ── Stop manual ──
   const stop = () => { cleanup(true); };
 
   const fmtTime = (s: number) => {
@@ -303,13 +273,19 @@ export default function LiveStreamer({ roomId, token, buildingName, onStop }: Pr
       <button
         onClick={live ? stop : start}
         className={`w-full py-3 text-sm rounded-xl font-semibold text-white transition ${
-          live ? 'bg-rose-500 hover:bg-rose-600' : 'bg-[#00c8ff] hover:opacity-90'
+          live
+            ? 'bg-rose-500 hover:bg-rose-600'
+            : 'bg-[#00c8ff] hover:opacity-90'
         }`}
       >
         {live ? (
-          <><i className="fa-solid fa-stop mr-2" /> Stop Live</>
+          <>
+            <i className="fa-solid fa-stop mr-2" /> Stop Live
+          </>
         ) : (
-          <><i className="fa-solid fa-circle-play mr-2" /> Mulai Live</>
+          <>
+            <i className="fa-solid fa-circle-play mr-2" /> Mulai Live
+          </>
         )}
       </button>
     </div>

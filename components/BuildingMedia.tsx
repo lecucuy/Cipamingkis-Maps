@@ -116,7 +116,6 @@ export default function BuildingMedia({
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [likeCounts, setLikeCounts] = useState<Record<string, { count: number; liked: boolean }>>({});
   const [shareCounts, setShareCounts] = useState<Record<string, number>>({});
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ===== FULLSCREEN SLIDER =====
   const [fullscreenGroupKey, setFullscreenGroupKey] = useState<string | null>(null);
@@ -143,6 +142,8 @@ export default function BuildingMedia({
   // ====== CURRENT USER ======
   const currentUserId = getUserIdFromToken(session?.accessToken);
   const [slideIndexes, setSlideIndexes] = useState<Record<string, number>>({});
+  const [viewCounts, setViewCounts] = useState<Record<string, number>>({}); 
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ===== UPLOADER LABEL =====
   const getUploaderLabel = useCallback(
@@ -249,6 +250,31 @@ export default function BuildingMedia({
     return groups;
   }, [filtered, activeTab]);
 
+  // ============ FETCH VIEW COUNT (BATCH) ============
+  useEffect(() => {
+    const ids = mediaIdsKey ? mediaIdsKey.split('|') : [];
+    const toFetch = ids.filter(id => !fetchedViewRef.current.has(id));
+    if (toFetch.length === 0) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await axios.get(
+          `${API_URL}/media/views/batch`,
+          { params: { ids: toFetch.join(',') } }
+        );
+        if (cancelled) return;
+        const views = res.data.views || {};
+        toFetch.forEach(id => fetchedViewRef.current.add(id));
+        setViewCounts(prev => ({ ...prev, ...views }));
+      } catch (e) {
+        console.error('Fetch views batch error:', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [mediaIdsKey]);
+
+
   // ESC untuk keluar dari model 3D fullscreen
     useEffect(() => {
       if (!modelFullscreen) return;
@@ -273,6 +299,8 @@ export default function BuildingMedia({
 
   const fetchedShareRef = useRef<Set<string>>(new Set());
   const fetchedLikeRef = useRef<Set<string>>(new Set());
+  const fetchedViewRef = useRef<Set<string>>(new Set());      // ✅ BARU — guard fetch
+  const trackedViewRef = useRef<Set<string>>(new Set());      // ✅ BARU — guard POST view
 
   const checkUploadPermission = useCallback((): boolean => {
     if (!session?.accessToken) {
@@ -560,7 +588,7 @@ export default function BuildingMedia({
   };
 
   // ============ FULLSCREEN HANDLER (FOTO) ============
-  const handleMediaClick = async (e: React.MouseEvent, groupKey?: string) => {
+  const handleMediaClick = async (e: React.MouseEvent, groupKey?: string, mediaId?: string) => {
     e.stopPropagation();
     const target = e.currentTarget as HTMLElement;
     const wrapper = target.closest('[data-media-wrapper]') as HTMLElement | null;
@@ -572,11 +600,12 @@ export default function BuildingMedia({
       } else {
         await el.requestFullscreen?.();
         if (groupKey) setFullscreenGroupKey(groupKey);
+        if (mediaId) trackView(mediaId);                      // ✅ BARU
       }
     } catch (err) {
       console.warn('Fullscreen gagal:', err);
     }
-  };
+};
 
   const exitFullscreen = async () => {
     try { await document.exitFullscreen?.(); } catch {}
@@ -629,6 +658,7 @@ export default function BuildingMedia({
 
           if (entry.isIntersecting && entry.intersectionRatio >= 0.6) {
             setActiveVideoId(id);
+            trackView(id);
             el.muted = mutedVideos[id] ?? true;
             if (!pausedVideos[id]) el.play().catch(() => {});
           } else {
@@ -731,6 +761,40 @@ export default function BuildingMedia({
       toast.error('Gagal like media');
     }
   };
+
+const trackView = useCallback(async (mediaId: string) => {
+  if (!mediaId) return;
+  if (trackedViewRef.current.has(mediaId)) return;
+  trackedViewRef.current.add(mediaId);
+
+  try {
+    // 🔥 device_id untuk anonim (persist per browser)
+    let deviceId = localStorage.getItem('device_id');
+    if (!deviceId) {
+      deviceId = (crypto as any).randomUUID?.() ||
+                 `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      localStorage.setItem('device_id', deviceId);
+    }
+
+    const headers = session?.accessToken
+      ? { Authorization: `Bearer ${session.accessToken}` }
+      : {};
+
+    const res = await axios.post(
+      `${API_URL}/media/${mediaId}/view`,
+      {},
+      { params: { device_id: deviceId }, headers }   // ← selalu kirim
+    );
+
+    const view_count = res.data?.view_count ?? 0;
+    setViewCounts(prev => ({ ...prev, [mediaId]: view_count }));
+  } catch (err) {
+    console.error('View track error:', err);
+    trackedViewRef.current.delete(mediaId);
+  }
+}, [session?.accessToken]);
+
+
 
   const handleShare = async (mediaItem: MediaItem) => {
     try {
@@ -1056,7 +1120,7 @@ export default function BuildingMedia({
                             ? 'max-h-screen max-w-full'
                             : 'w-full max-h-[500px] group-hover:scale-[1.01]'
                         }`}
-                        onClick={(e) => handleMediaClick(e, group.key)}
+                        onClick={(e) => handleMediaClick(e, group.key, item._id)}
                         onTouchStart={(e) => {
                           if (!document.fullscreenElement) return;
                           touchStartXRef.current = e.touches[0].clientX;
@@ -1281,6 +1345,13 @@ export default function BuildingMedia({
                         <i className={`fa-${likeCounts[item._id]?.liked ? 'solid' : 'regular'} fa-heart text-base group-hover:scale-110 transition-transform`}></i>
                         <span className="tabular-nums">{likeCounts[item._id]?.count || 0}</span>
                       </button>
+
+                      {/* View count — samakan style dengan like/share */}
+                      <div className="social-btn cursor-default" title="Jumlah user yang melihat">
+                        <i className="fa-regular fa-eye text-base"></i>
+                        <span className="tabular-nums">{viewCounts[item._id] || 0}</span>
+                      </div>
+
                       <button className="social-btn ml-auto" onClick={() => handleShare(item)}>
                         <i className="fa-regular fa-share-from-square text-base"></i>
                         <span className="tabular-nums">{shareCounts[item._id] || 0}</span>
