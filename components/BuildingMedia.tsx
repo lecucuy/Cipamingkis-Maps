@@ -769,11 +769,13 @@ const trackView = useCallback(async (mediaId: string) => {
 
   try {
     // 🔥 device_id untuk anonim (persist per browser)
-    let deviceId = localStorage.getItem('device_id');
+    // ✅ FIX: tipe eksplisit string + fallback '' biar tidak null
+    let deviceId: string = localStorage.getItem('device_id') ?? '';
     if (!deviceId) {
-      deviceId = (crypto as any).randomUUID?.() ||
-                 `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      localStorage.setItem('device_id', deviceId);
+      deviceId =
+        (crypto as any).randomUUID?.() ||
+        `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      localStorage.setItem('device_id', deviceId);   // ← sekarang deviceId: string
     }
 
     const headers = session?.accessToken
@@ -783,7 +785,7 @@ const trackView = useCallback(async (mediaId: string) => {
     const res = await axios.post(
       `${API_URL}/media/${mediaId}/view`,
       {},
-      { params: { device_id: deviceId }, headers }   // ← selalu kirim
+      { params: { device_id: deviceId }, headers }
     );
 
     const view_count = res.data?.view_count ?? 0;
