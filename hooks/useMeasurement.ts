@@ -59,28 +59,29 @@ export function useMeasurement({ map, L }: Options) {
    * Ambil / buat ulang layer group measurement.
    * Pastikan selalu nempel di map.
    */
-  const ensureLayer = useCallback((which: 'temp' | 'results'): Leaflet.LayerGroup | null => {
-    if (!map || !L) return null;
+    const ensureLayer = useCallback((which: 'temp' | 'results'): Leaflet.LayerGroup | null => {
+      if (!map || !L) return null;
 
-    // 🔥 Pastikan pane custom sudah ada
-    if (!map.getPane(PANE_NAME)) {
-      const pane = map.createPane(PANE_NAME);
-      // markerPane = 600, popupPane = 700. Taruh di 650 = di atas marker tapi di bawah popup
-      pane.style.zIndex = '650';
-      pane.style.pointerEvents = 'none'; // hanya untuk render, bukan interaksi
-    }
+      if (!map.getPane(PANE_NAME)) {
+        const pane = map.createPane(PANE_NAME);
+        pane.style.zIndex = '650';
+        pane.style.pointerEvents = 'none';
+      }
 
-    const ref = which === 'temp' ? tempLayerRef : resultsLayerRef;
-    if (!ref.current) {
-      const g = L.layerGroup();
-      (g as any)._isMeasurement = true;
-      ref.current = g;
-    }
-    if (!map.hasLayer(ref.current)) {
-      map.addLayer(ref.current);
-    }
-    return ref.current;
-  }, [map, L]);
+      const ref = which === 'temp' ? tempLayerRef : resultsLayerRef;
+      if (!ref.current) {
+        const g = L.layerGroup();
+        (g as any)._isMeasurement = true;
+        ref.current = g;
+      }
+
+      // ✅ pakai local variable supaya TS bisa narrow
+      const layer = ref.current;
+      if (layer && !map.hasLayer(layer)) {
+        map.addLayer(layer);
+      }
+      return layer;
+    }, [map, L]);
 
   // Setup awal
   useEffect(() => {

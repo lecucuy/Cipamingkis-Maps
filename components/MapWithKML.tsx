@@ -2105,8 +2105,12 @@ if (isKejuron) {
           const outline = L.polyline(line.path, { color: '#FFFFFF', weight: 3, dashArray: dash, opacity: 0.2, interactive: false });
           const mainLine = L.polyline(line.path, { color: mainColor, weight: 2, dashArray: dash, opacity: 0.15, lineJoin: 'round' });
 
-          mainLine.on('mouseover', function (e) { e.target.setStyle({ weight: 3, opacity: 0.7 }); });
-          mainLine.on('mouseout', function (e) { e.target.setStyle({ weight: 2, opacity: 0.15 }); });
+          mainLine.on('mouseover', function (e: any) {
+            (e.target as L.Polyline).setStyle({ weight: 3, opacity: 0.7 });
+          });
+          mainLine.on('mouseout', function (e: any) {
+            (e.target as L.Polyline).setStyle({ weight: 2, opacity: 0.15 });
+          });
 
           // 🔥 TAMBAHKAN POPUP DENGAN DISCLAIMER
           mainLine.bindPopup(`
@@ -2124,7 +2128,7 @@ if (isKejuron) {
             </div>
           `);
 
-          mainLine.on('click', function (e) {
+          mainLine.on('click', function (e:any) {
             const latlngs = e.target.getLatLngs();
             let totalLength = 0;
             const segments = [];
@@ -2137,7 +2141,7 @@ if (isKejuron) {
               name: line.name || 'Sempadan',
               length: totalLength,
               segments,
-              coordinates: latlngs.map((l) => [l.lat, l.lng]),
+             coordinates: latlngs.map((l: L.LatLng) => [l.lat, l.lng]),
             });
             if (!isPanelOpen) setIsPanelOpen(true);
             map.fitBounds(e.target.getBounds(), { padding: [50, 50] });
