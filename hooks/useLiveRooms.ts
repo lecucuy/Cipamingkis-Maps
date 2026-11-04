@@ -15,50 +15,58 @@ export interface LiveRoom {
   is_mine: boolean;
 }
 
+type AuthFailReason = null | 'unauthenticated' | 'forbidden';
+
 export function useLiveRooms(token?: string, intervalMs = 8000) {
   const [rooms, setRooms] = useState<LiveRoom[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
-  // 🔒 Refs untuk kontrol loop tanpa bikin effect re-run
-  const inflightRef = useRef(false);          // anti-overlap
-  const errorCountRef = useRef(0);            // backoff counter
-  const authFailedRef = useRef(false);        // stop polling kalau 401/403
+  const inflightRef = useRef<AbortController | null>(null);
+  const errorCountRef = useRef(0);
+  const authFailedRef = useRef<AuthFailReason>(null);
 
   const refresh = useCallback(() => {
-    // manual refresh → reset backoff & auth flag
     errorCountRef.current = 0;
-    authFailedRef.current = false;
-    setRefreshTrigger(k => k + 1);
+    authFailedRef.current = null;
+    setRefreshTrigger((k) => k + 1);
   }, []);
 
   useEffect(() => {
     if (!REALTIME_URL) return;
 
-    // Kalau token berubah (login/logout) → reset auth flag
-    authFailedRef.current = false;
+    authFailedRef.current = null;
 
     let stopped = false;
     let timerId: ReturnType<typeof setTimeout> | null = null;
-    let abortCtrl: AbortController | null = null;
+    let generation = 0;
 
-    const fetchRooms = async () => {
-      // 🛑 Skip kalau sudah gagal auth (menunggu manual refresh / token baru)
+    const isVisible = () =>
+      typeof document === 'undefined' ||
+      document.visibilityState === 'visible';
+
+    // Backoff + jitter (hindari thundering herd)
+    const computeDelay = () => {
+      const errs = errorCountRef.current;
+      const jitter = Math.random() * 2000;
+      if (errs === 0) return intervalMs + jitter;
+      const base = Math.min(intervalMs * 2 ** errs, 60_000);
+      return base + jitter;
+    };
+
+    const fetchRooms = async (gen: number) => {
       if (authFailedRef.current) return;
+      if (!isVisible()) return;
 
-      // 🛑 Skip kalau request sebelumnya belum selesai
-      if (inflightRef.current) return;
-
-      // 🛑 Skip kalau tab tidak aktif (dicek di schedule, ini jaga-jaga)
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
-        return;
+      // abort request sebelumnya (kalau ada) — pakai ctrl lokal
+      if (inflightRef.current) {
+        inflightRef.current.abort();
+        inflightRef.current = null;
       }
+      const ctrl = new AbortController();
+      inflightRef.current = ctrl;
 
-      inflightRef.current = true;
       setLoading(true);
-
-      // abort controller baru per request
-      abortCtrl = new AbortController();
 
       try {
         const headers: Record<string, string> = {};
@@ -66,90 +74,93 @@ export function useLiveRooms(token?: string, intervalMs = 8000) {
 
         const res = await axios.get(`${REALTIME_URL}/live/active`, {
           headers,
-          signal: abortCtrl.signal,
+          signal: ctrl.signal,
           timeout: 10_000,
         });
 
-        if (!stopped) {
-          setRooms(res.data?.items || []);
-          errorCountRef.current = 0;  // sukses → reset backoff
-        }
+        if (stopped || gen !== generation) return;
+        setRooms(res.data?.items || []);
+        errorCountRef.current = 0;
       } catch (e: any) {
-        // Aborted (unmount / tab hidden) → bukan error
-        if (axios.isCancel(e) || e.name === 'CanceledError') return;
+        if (
+          axios.isCancel(e) ||
+          e.name === 'CanceledError' ||
+          e.name === 'AbortError'
+        ) {
+          return;
+        }
+        if (stopped || gen !== generation) return;
 
         const status = e.response?.status;
 
-        if (status === 401 || status === 403) {
-          // 🔥 Token mati → STOP polling sampai user login ulang / manual refresh
-          authFailedRef.current = true;
-          if (!stopped) setRooms([]);
-          console.warn('[useLiveRooms] auth failed — polling stopped. Refresh after login.');
+        if (status === 401) {
+          authFailedRef.current = 'unauthenticated';
+          setRooms([]);
+          console.warn('[useLiveRooms] 401 — polling paused (login ulang)');
+        } else if (status === 403) {
+          authFailedRef.current = 'forbidden';
+          setRooms([]);
+          console.warn('[useLiveRooms] 403 — polling paused (refresh utk resume)');
         } else {
-          // Error jaringan / 5xx → biarkan data lama, naikkan backoff
           errorCountRef.current += 1;
           console.warn(
-            `[useLiveRooms] fetch error (${errorCountRef.current}):`,
-            e.message,
+            `[useLiveRooms] fetch error #${errorCountRef.current} ` +
+              `status=${status ?? 'network'}: ${e.message}`,
           );
         }
       } finally {
-        inflightRef.current = false;
-        if (!stopped) setLoading(false);
+        if (inflightRef.current === ctrl) inflightRef.current = null;
+        if (!stopped && gen === generation) setLoading(false);
       }
     };
 
-    // 📅 Scheduler dengan backoff + pause saat tab hidden
-    const schedule = () => {
-      if (stopped) return;
+    const loop = async (gen: number) => {
+      if (stopped || gen !== generation) return;
+      if (authFailedRef.current) return;
 
-      // Kalau tab tidak aktif → jadwalkan cek lagi 5s (tidak fetch)
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
-        timerId = setTimeout(schedule, 5000);
+      // tab hidden → cek lagi 5s, nggak fetch
+      if (!isVisible()) {
+        timerId = setTimeout(() => loop(gen), 5000);
         return;
       }
 
-      // Kalau auth sudah gagal → jangan jadwalkan apa-apa (tunggu manual refresh)
-      if (authFailedRef.current) {
-        return;
-      }
+      await fetchRooms(gen);
 
-      // Backoff: 8s, 16s, 32s, 64s (cap 60s)
-      const base = intervalMs;
-      const backoff =
-        errorCountRef.current === 0
-          ? base
-          : Math.min(base * 2 ** errorCountRef.current, 60_000);
+      if (stopped || gen !== generation) return;
+      if (authFailedRef.current) return;
 
-      timerId = setTimeout(async () => {
-        await fetchRooms();
-        schedule();  // jadwalkan berikutnya SETELAH fetch selesai
-      }, backoff);
+      timerId = setTimeout(() => loop(gen), computeDelay());
     };
 
-    // 🌐 Visibility handler — resume saat tab aktif kembali
+    // Kick = invalidate chain lama + mulai chain baru
+    const kick = () => {
+      generation++;
+      if (timerId) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
+      loop(generation);
+    };
+
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && !authFailedRef.current) {
-        // Tab aktif lagi → fetch segera (jangan tunggu timer)
-        if (timerId) {
-          clearTimeout(timerId);
-          timerId = null;
-        }
-        fetchRooms().then(() => schedule());
-      }
+      if (document.visibilityState === 'visible') kick();
     };
 
     document.addEventListener('visibilitychange', onVisibilityChange);
+    kick();
 
-    // 🚀 Kick-off
-    fetchRooms().then(() => schedule());
-
-    // 🧹 Cleanup
     return () => {
       stopped = true;
+      generation++;                          // invalidate semua chain aktif
       document.removeEventListener('visibilitychange', onVisibilityChange);
-      if (timerId) clearTimeout(timerId);
-      if (abortCtrl) abortCtrl.abort();
+      if (timerId) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
+      if (inflightRef.current) {
+        inflightRef.current.abort();
+        inflightRef.current = null;
+      }
     };
   }, [token, intervalMs, refreshTrigger]);
 

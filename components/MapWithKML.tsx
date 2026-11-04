@@ -468,11 +468,10 @@ export default function MapWithKML() {
       reports.forEach((r: any) => {
         map[r.polygon_id] = r;
       });
-      console.log('[MusimTanam] ✅ fetched:', reports.length, 'reports');
-      console.log('[MusimTanam] keys:', Object.keys(map));
+     
       setMusimTanamByPolygon(map);
     } catch (err: any) {
-      console.error('[MusimTanam] ❌ fetch error:', err.response?.status, err.message);
+     
     }
   }, [session?.accessToken]);
 
@@ -502,7 +501,7 @@ const bendungIds = useMemo(() => {
     ids.push(mercuPoly.name);
   }
 
-  console.log('[bendungIds]', ids);  // DEBUG
+
   return ids;
 }, [stationPoints, geoData]);
 
@@ -527,19 +526,10 @@ const { latestDebits } = useLatestDebits(bendungIds);
     > = {};
 
     if (!geoData?.lines?.length || !latestDebits || !stationPointsRef.current) {
-      console.log('[saluranFlowMap] skip — data belum siap', {
-        hasLines: !!geoData?.lines?.length,
-        hasDebits: !!latestDebits,
-        hasRef: !!stationPointsRef.current,
-      });
       return map;
     }
 
-    console.log(
-      '[saluranFlowMap] bendung dgn debit:',
-      Object.keys(latestDebits).length,
-      Object.entries(latestDebits).map(([k, v]: any) => `${k}=${v.debit}`)
-    );
+   
 
     Object.values(latestDebits).forEach((flow: any) => {
       const bendung = stationPointsRef.current[flow.buildingId];
@@ -570,9 +560,7 @@ const { latestDebits } = useLatestDebits(bendungIds);
         }
       });
 
-      console.log(
-        `[saluranFlowMap] ${flow.buildingId} → saluran terdekat: "${bestLine?.name}" (${bestDist.toFixed(3)} km)`
-      );
+
 
       // ✅ Threshold dinaikin dari 0.5 → 3 km
       if (bestLine && bestDist < 3) {
@@ -592,7 +580,6 @@ const { latestDebits } = useLatestDebits(bendungIds);
       }
     });
 
-    console.log('[saluranFlowMap] hasil:', Object.keys(map));
     return map;
   }, [geoData, latestDebits]);
 
@@ -608,11 +595,6 @@ const {
    
     
 
-useEffect(() => {
-  console.log('🔍 RAW role:', session?.user?.role);
-  console.log('🔍 normalizeRole:', normalizeRole(session?.user?.role));
-  console.log('🔍 session.user:', session?.user);
-}, [session]);
 
 
 // 🔥 Deteksi Juru Bengkok (konsisten dgn backend)
@@ -667,10 +649,6 @@ useEffect(() => {
     // 🔥 Kalau Juru Mengker → saring hanya polygon "Luasan Sawah ... BMe ..."
     else if (isJuruMengker) {
       polys = polys.filter((p: any) => JURU_MENGKER_POLYGON_REGEX.test(p.name || ''));
-      console.log(
-        '[MusimTanam] Mengker — polygon lolos:',
-        polys.map((p: any) => p.name)
-      );
     }
 
     return polys.map((p: any) => ({
@@ -1223,7 +1201,7 @@ const toggleTemperature = useCallback(() => {
     "BATAS": true,
     "LUASAN_SAWAH": true,
     "BANJIR_POLY": true,
-    "SALURAN_DEFAULT": true,
+    "SALURAN_DEFAULT": false,
     "SUMBER_PENCEMARAN": true,
   });
 
@@ -1257,7 +1235,6 @@ useEffect(() => {
   // Fungsi inisialisasi map menggunakan L dari closure
   const initMap = () => {
   if (!containerRef.current || mapRef.current || !L) return;
-  console.log('🗺️ Init map...');
 
   const map = L.map(containerRef.current, {
     zoomControl: false,
@@ -1487,7 +1464,6 @@ useEffect(() => {
   const renderData = useCallback(() => {
     if (!mapReady || !mapRef.current || !geoData || !L) return;
     const map = mapRef.current;
-    console.log('📊 Render data...');
 
     // Hapus semua layer non-tile/control
     // Hapus semua layer non-tile/control
@@ -2020,82 +1996,97 @@ useEffect(() => {
       return;
       }
       // KEJURON
-      // KEJURON
-if (isKejuron) {
-  const baseStyle: L.PathOptions = {
-    color: '#94A3B8',        // slate-400, lebih kelihatan dari #AAAAAA
-    weight: 2,
-    dashArray: '4, 6',
-    opacity: 0.6,            // naik dari 0.3
-    lineJoin: 'round',
-  };
-  const hoverStyle: L.PathOptions = {
-    color: '#00E5FF',        // cyan terang
-    weight: 3.5,
-    dashArray: '8, 4',
-    opacity: 0.95,
-  };
-  const selectedStyle: L.PathOptions = {
-    color: '#FFA500',        // oranye, beda dari hover
-    weight: 4,
-    dashArray: '10, 4',
-    opacity: 1,
-  };
+      if (isKejuron) {
+        const baseStyle: L.PathOptions = {
+          color: '#94A3B8', weight: 2, dashArray: '4, 6', opacity: 0.6, lineJoin: 'round',
+        };
+        const hoverStyle: L.PathOptions = {
+          color: '#00E5FF', weight: 3.5, dashArray: '8, 4', opacity: 0.95,
+        };
+        const selectedStyle: L.PathOptions = {
+          color: '#FFA500', weight: 4, dashArray: '10, 4', opacity: 1,
+        };
 
-  const layer = L.polyline(line.path, baseStyle);
+        const layer = L.polyline(line.path, baseStyle);
 
-  // ===== HOVER =====
-  layer.on('mouseover', (e: any) => {
-    if (!(layer as any)._kejuronSelected) {
-      e.target.setStyle(hoverStyle);
-      e.target.bringToFront();
-    }
-  });
-  layer.on('mouseout', (e: any) => {
-    if (!(layer as any)._kejuronSelected) {
-      e.target.setStyle(baseStyle);
-    }
-  });
+        // ===== 📐 HITUNG LUAS dari ring path =====
+        let kejuronAreaM2 = 0;
+        if (line.path && line.path.length >= 3) {
+          try {
+            const ring = [...line.path];
+            const first = ring[0];
+            const last  = ring[ring.length - 1];
+            if (first[0] !== last[0] || first[1] !== last[1]) {
+              ring.push([first[0], first[1]]);
+            }
+            // line.path = [lat, lon] → turf butuh [lon, lat]
+            const coords = ring.map(([lat, lon]: [number, number]) => [lon, lat]);
+            kejuronAreaM2 = turf.area(turf.polygon([coords]));
+          } catch (e) {
+            console.warn('[Kejuron] gagal hitung luas:', e);
+          }
+        }
 
-  // ===== CLICK → toggle selected =====
-    layer.on('click', () => {
-      // Deselect layer sebelumnya (kalau beda)
-      if (selectedKejuronRef.current && selectedKejuronRef.current !== layer) {
-        (selectedKejuronRef.current as any)._kejuronSelected = false;
-        selectedKejuronRef.current.setStyle(baseStyle);
+        const formatArea = (m2: number) => {
+          if (!m2 || m2 <= 0) return '-';
+          if (m2 >= 1_000_000) return `${(m2 / 1_000_000).toFixed(2)} km²`;
+          return `${(m2 / 10_000).toFixed(1)} Ha`;
+        };
+
+        // ===== HOVER (tetap seperti sebelumnya) =====
+        layer.on('mouseover', (e: any) => {
+          if (!(layer as any)._kejuronSelected) {
+            e.target.setStyle(hoverStyle);
+            e.target.bringToFront();
+          }
+        });
+        layer.on('mouseout', (e: any) => {
+          if (!(layer as any)._kejuronSelected) e.target.setStyle(baseStyle);
+        });
+
+        // ===== CLICK (tetap toggle, tapi kirim area) =====
+        layer.on('click', () => {
+          if (selectedKejuronRef.current && selectedKejuronRef.current !== layer) {
+            (selectedKejuronRef.current as any)._kejuronSelected = false;
+            selectedKejuronRef.current.setStyle(baseStyle);
+          }
+          if ((layer as any)._kejuronSelected) {
+            (layer as any)._kejuronSelected = false;
+            selectedKejuronRef.current = null;
+            layer.setStyle(hoverStyle);
+          } else {
+            (layer as any)._kejuronSelected = true;
+            selectedKejuronRef.current = layer;
+            layer.setStyle(selectedStyle);
+            layer.bringToFront();
+          }
+
+          // 🔥 kirim AREA, bukan length
+          if (kejuronAreaM2 > 0) {
+            setSelectedSaluran({
+              name: line.name || 'Kejuron',
+              area: kejuronAreaM2,
+            });
+            if (!isPanelOpen) setIsPanelOpen(true);
+          }
+        });
+
+        // ===== POPUP: ganti "Panjang" → "Luas" =====
+        layer.bindPopup(`
+          <div style="font-family:Inter;min-width:180px;">
+            <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Kejuron'}</h4>
+            <p style="margin:0;font-size:11px;color:#666;">✕ Batas Kejuron</p>
+            ${kejuronAreaM2 > 0
+              ? `<p style="margin:4px 0 0 0;font-size:12px;color:#00E5FF;font-weight:bold;">📐 Luas: ${formatArea(kejuronAreaM2)}</p>`
+              : `<p style="margin:4px 0 0 0;font-size:10px;color:#999;">Luas tidak dapat dihitung</p>`
+            }
+          </div>
+        `);
+
+        if (!lineGroups['KEJURON']) lineGroups['KEJURON'] = L.layerGroup();
+        lineGroups['KEJURON'].addLayer(layer);
+        return;
       }
-
-      if ((layer as any)._kejuronSelected) {
-        // Toggle off — tetap tampilkan hover karena kursor masih di atas
-        (layer as any)._kejuronSelected = false;
-        selectedKejuronRef.current = null;
-        layer.setStyle(hoverStyle);
-      } else {
-        // Toggle on
-        (layer as any)._kejuronSelected = true;
-        selectedKejuronRef.current = layer;
-        layer.setStyle(selectedStyle);
-        layer.bringToFront();
-      }
-
-      if (line.length) {
-        setSelectedSaluran({ name: line.name || 'Kejuron', length: line.length });
-        if (!isPanelOpen) setIsPanelOpen(true);
-      }
-    });
-
-    layer.bindPopup(`
-      <div style="font-family:Inter;min-width:150px;">
-        <h4 style="margin:0 0 4px 0;font-size:14px;color:#1a1a2e;">${line.name || 'Kejuron'}</h4>
-        <p style="margin:0;font-size:11px;color:#666;">✕ Batas Kejuron</p>
-        ${line.length ? `<p style="margin:4px 0 0 0;font-size:12px;color:#00E5FF;font-weight:bold;">📏 Panjang: ${formatLength(line.length)}</p>` : ''}
-      </div>
-    `);
-
-    if (!lineGroups['KEJURON']) lineGroups['KEJURON'] = L.layerGroup();
-    lineGroups['KEJURON'].addLayer(layer);
-    return;
-  }
 
       // SEMPADAN
       if (isSempadan) {
@@ -2500,7 +2491,6 @@ if (showWind && envData?.windSpeed) {
       initialFitDone.current = true;
     }
     setTimeout(() => { if (mapRef.current) mapRef.current.invalidateSize(); }, 300);
-    console.log('✅ Data selesai di-render!');
   }, [geoData, mapReady, L, filteredPoints, filteredLines, filteredPolygons, layerVisibility, showHeatmap, showAQI, showWind, showTemperature, envData, saluranFlowMap, showFlowAnimation, musimTanamByPolygon])
   useEffect(() => {
     renderData();
@@ -2698,9 +2688,8 @@ useEffect(() => {
   const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'wss://api.cipamingkis.com';
   const ws = new WebSocket(`${WS_URL}/ws/frontend`);
 
-  ws.onopen = () => {
-    console.log('[UGV WS] connected');
-  };
+
+
 
   ws.onmessage = (event) => {
     try {
@@ -2753,8 +2742,7 @@ useEffect(() => {
   };
 
   ws.onerror = () => console.warn('[UGV WS] error');
-  ws.onclose = () => console.log('[UGV WS] disconnected');
-
+ 
   // Heartbeat biar tidak dianggap idle oleh proxy
   const pingInterval = setInterval(() => {
     if (ws.readyState === WebSocket.OPEN) {
@@ -3325,13 +3313,6 @@ if (error) {
         )}
 
       {/* 🔥 RAB PROGRESS */}
-      {selectedFeature && (
-        <RABProgressPanel
-          buildingId={selectedFeature.name}
-          buildingName={selectedFeature.name}
-          onRefresh={() => setProgressRefreshKey((k) => k + 1)}
-        />
-      )}
 
       {/* Sudah ada live di building ini (bukan punya user) */}
       {selectedFeature &&
@@ -3562,15 +3543,37 @@ if (error) {
                 <div className="flex items-start justify-between">
                   <div>
                     <h4 className="text-sm font-semibold text-cyan-700 dark:text-cyan-300 flex items-center gap-2">
-                      <i className="fa-solid fa-water"></i> Detail Saluran
+                      <i className={`fa-solid ${selectedSaluran.area != null ? 'fa-border-all' : 'fa-water'}`}></i>
+                      {selectedSaluran.area != null ? 'Detail Kejuron' : 'Detail Saluran'}
                     </h4>
-                    <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 font-medium">{selectedSaluran.name}</p>
+                    <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 font-medium">
+                      {selectedSaluran.name}
+                    </p>
+
                     <div className="mt-2 flex items-baseline gap-2">
-                      <span className="text-2xl font-bold text-cyan-600 dark:text-cyan-400">{formatLength(selectedSaluran.length)}</span>
-                      <span className="text-xs text-gray-500 dark:text-gray-400">meter</span>
+                      {selectedSaluran.area != null ? (
+                        <>
+                          <span className="text-2xl font-bold text-cyan-600 dark:text-cyan-400">
+                            {selectedSaluran.area >= 1_000_000
+                              ? `${(selectedSaluran.area / 1_000_000).toFixed(2)} km²`
+                              : `${(selectedSaluran.area / 10_000).toFixed(1)} Ha`}
+                          </span>
+                          <span className="text-xs text-gray-500 dark:text-gray-400">luas</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-2xl font-bold text-cyan-600 dark:text-cyan-400">
+                            {formatLength(selectedSaluran.length)}
+                          </span>
+                          <span className="text-xs text-gray-500 dark:text-gray-400">panjang</span>
+                        </>
+                      )}
                     </div>
                   </div>
-                  <button onClick={() => setSelectedSaluran(null)} className="w-6 h-6 rounded-full hover:bg-cyan-200 dark:hover:bg-cyan-700/40 flex items-center justify-center text-cyan-500 dark:text-cyan-400 transition-colors">
+                  <button
+                    onClick={() => setSelectedSaluran(null)}
+                    className="w-6 h-6 rounded-full hover:bg-cyan-200 dark:hover:bg-cyan-700/40 flex items-center justify-center text-cyan-500 dark:text-cyan-400 transition-colors"
+                  >
                     <i className="fa-solid fa-xmark"></i>
                   </button>
                 </div>

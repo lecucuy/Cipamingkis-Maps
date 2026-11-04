@@ -10,6 +10,7 @@ interface Props {
   buildingId: string;
   buildingName: string;
   onRefresh?: () => void;
+  refreshKey?: number;   // ← tambah prop baru
 }
 
 const PROGRESS_ROLES = ['admin', 'supervisor', 'juru'];
@@ -21,7 +22,7 @@ const fmtIDR = (n?: number) =>
       }).format(n)
     : '-';
 
-export default function RABProgressPanel({ buildingId, buildingName, onRefresh }: Props) {
+export default function RABProgressPanel({ buildingId, buildingName, onRefresh, refreshKey }: Props) {
   const { data: session } = useSession();
   const token = (session as any)?.accessToken as string | undefined;
 
@@ -44,7 +45,7 @@ export default function RABProgressPanel({ buildingId, buildingName, onRefresh }
         : await rabApi.list(buildingId);
 
       const active = (r.items || []).filter(
-        (x: any) => x.status === 'berjalan' || x.status === 'selesai'
+        (x: any) => x.status === 'draft' || x.status === 'berjalan' || x.status === 'selesai'
       );
       setRabs(active);
     } catch (e: any) {
@@ -58,7 +59,7 @@ export default function RABProgressPanel({ buildingId, buildingName, onRefresh }
   useEffect(() => {
     loadRabs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [buildingId, token]);
+  }, [buildingId, token,refreshKey]);
 
   const loadDetail = async (rabId: string) => {
     try {
