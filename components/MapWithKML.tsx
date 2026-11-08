@@ -55,6 +55,8 @@ import LiveStreamer from '@/components/live/LiveStreamer';
 import LiveViewer from '@/components/live/LiveViewer';
 import { useLiveRooms, LiveRoom } from '@/hooks/useLiveRooms';
 import { MapLoadingScreen, MapErrorScreen } from '@/components/map/screens';
+import { REALTIME_URL } from '@/lib/realtime';
+import { userApi } from '@/lib/api/user';
 
 declare module 'leaflet' {
   function heat(latlngs: any[], options?: any): any;
@@ -196,6 +198,26 @@ export default function MapWithKML() {
   const [rainfallLoading, setRainfallLoading] = useState(false);
   const API_URL = process.env.NEXT_PUBLIC_API_URL;
   if (!API_URL) throw new Error('NEXT_PUBLIC_API_URL belum dikonfigurasi');
+  
+  // ===== FILTER: Batasi hanya data dalam wilayah proyek Cipamingkis =====
+    // Mencegah data demo/test (mis. St Peters Basilica, Vatican) muncul di peta
+    const PROJECT_BOUNDS = {
+      minLat: -7.5,
+      maxLat: -5.5,
+      minLon: 105.5,
+      maxLon: 108.5,
+    };
+
+    const isWithinProjectBounds = (lat: number, lon: number): boolean => {
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+      return (
+        lat >= PROJECT_BOUNDS.minLat &&
+        lat <= PROJECT_BOUNDS.maxLat &&
+        lon >= PROJECT_BOUNDS.minLon &&
+        lon <= PROJECT_BOUNDS.maxLon
+      );
+    };
+
   // HOOK HASHTAG
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const { tagFilter, setTagFilter, filteredPoints, filteredLines, filteredPolygons, allTags } = useHashtagFilter(geoData);
@@ -231,7 +253,7 @@ export default function MapWithKML() {
   const [liveViewerRoom, setLiveViewerRoom] = useState<string | null>(null);
   const [startingLive, setStartingLive] = useState(false);
   const liveLayerRef = useRef<L.LayerGroup | null>(null);
-
+  const [userAvatar, setUserAvatar] = useState<string | null>(null);
   const [ugvs, setUgvs] = useState<UGVRobot[]>([]);
   const ugvLayerRef = useRef<L.LayerGroup | null>(null);
   const ugvMarkersRef = useRef<Record<string, L.Marker>>({});
@@ -249,6 +271,54 @@ export default function MapWithKML() {
     const userLat = session?.user?.lat;
     const userLon = session?.user?.lon;
 
+
+    // ===== AVATAR USER =====
+const resolveAvatarUrl = useCallback((url?: string | null) => {
+  if (!url) return null;
+  // sudah URL absolut / data URI
+  if (/^(https?:)?\/\//i.test(url) || url.startsWith('data:')) return url;
+  // relative path → prefix dengan origin (strip /api dari API_URL)
+  const base = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/api\/?$/, '');
+  return `${base}${url.startsWith('/') ? '' : '/'}${url}`;
+}, []);
+
+const refreshAvatar = useCallback(async () => {
+  if (!session?.accessToken) {
+    setUserAvatar(null);
+    return;
+  }
+  try {
+    const me = await userApi.me(session.accessToken);
+    // dukung beberapa nama field umum
+    const url =
+      (me as any)?.avatar_url ||
+      (me as any)?.avatar ||
+      (me as any)?.photo_url ||
+      null;
+    setUserAvatar(resolveAvatarUrl(url));
+  } catch {
+    setUserAvatar(null);
+  }
+}, [session?.accessToken, resolveAvatarUrl]);
+
+// Fetch saat pertama login / token berubah
+useEffect(() => {
+  refreshAvatar();
+}, [refreshAvatar]);
+
+// Refresh saat window kembali fokus + saat event 'ilookai:avatar-updated' dipancarkan
+useEffect(() => {
+  const onFocus = () => refreshAvatar();
+  const onAvatarUpdated = () => refreshAvatar();
+
+  window.addEventListener('focus', onFocus);
+  window.addEventListener('ilookai:avatar-updated', onAvatarUpdated as EventListener);
+
+  return () => {
+    window.removeEventListener('focus', onFocus);
+    window.removeEventListener('ilookai:avatar-updated', onAvatarUpdated as EventListener);
+  };
+}, [refreshAvatar]);
 
   // Cek apakah suatu building berada di polygon user
   const isBuildingInMyPolygon = useCallback((building: any) => {
@@ -275,7 +345,7 @@ export default function MapWithKML() {
     setStartingLive(true);
     try {
       const res = await axios.post(
-        `${API_URL}/live/start`,
+        `${REALTIME_URL}/live/start`,
         {
           building_id: building.name,
           building_name: building.name,
@@ -301,7 +371,7 @@ export default function MapWithKML() {
     if (!session?.accessToken) return;
     try {
       await axios.post(
-        `${API_URL}/live/${roomId}/stop`,
+        `${REALTIME_URL}/live/start`,
         {},
         { headers: { Authorization: `Bearer ${session.accessToken}` } }
       );
@@ -431,6 +501,24 @@ export default function MapWithKML() {
       }
     };
   }, [liveRooms, mapReady, L, stationPoints]);
+
+  
+  const isFeatureInBounds = (feature: any): boolean => {
+    // Point
+    if (typeof feature.lat === 'number' && typeof feature.lon === 'number') {
+      return isWithinProjectBounds(feature.lat, feature.lon);
+    }
+    // Line / Polygon — pakai path
+    const path = feature.path;
+    if (!Array.isArray(path) || path.length === 0) return false;
+    return path.some((pt: any) => {
+      if (!Array.isArray(pt) || pt.length < 2) return false;
+      return isWithinProjectBounds(pt[0], pt[1]);
+    });
+  };
+
+
+
 
   useEffect(() => {
   const map = mapRef.current;
@@ -1045,65 +1133,63 @@ const toggleTemperature = useCallback(() => {
   // ===== LOAD DATA =====
   useEffect(() => {
     const loadData = async () => {
-      try {
-        const res = await axios.get(`${API_URL}/intake/geodata`, { timeout: 10000 });
-        const data = res.data;
+  try {
+    const res = await axios.get(`${API_URL}/intake/geodata`, { timeout: 10000 });
+    const data = res.data;
 
-        const categorizedPoints = (data.points || []).map((p: any) => {
-          const tags = extractHashtags(p.description || '');
-          let category = categorizeFeature(p.name, p.description, 'point');
+    // 🔥 FILTER: hanya ambil fitur yang berada di wilayah Cipamingkis
+    const rawPoints    = (data.points    || []).filter((p: any) => isFeatureInBounds(p));
+    const rawLines     = (data.lines     || []).filter((l: any) => isFeatureInBounds(l));
+    const rawPolygons  = (data.polygons  || []).filter((p: any) => isFeatureInBounds(p));
 
-          // 🚨 Deteksi Sumber Pencemaran
-          //   - Nama/deskripsi mengandung "pencemar" / "limbah" / "polusi" / "tumpahan"
-          //   - ATAU punya hashtag #pencemaran / #sumberpencemaran / #limbah / #polusi
-          const POLLUTION_TAGS = ['pencemaran', 'sumberpencemaran', 'limbah', 'polusi', 'tumpahan'];
-          const isPollution =
-            /pencemar|limbah|polusi|tumpahan/i.test(p.name || '') ||
-            /pencemar|limbah|polusi|tumpahan/i.test(p.description || '') ||
-            tags.some((t: string) => POLLUTION_TAGS.includes(t.toLowerCase()));
+    const categorizedPoints = rawPoints.map((p: any) => {
+      const tags = extractHashtags(p.description || '');
+      let category = categorizeFeature(p.name, p.description, 'point');
 
-          if (isPollution) category = 'SUMBER_PENCEMARAN';
+      const POLLUTION_TAGS = ['pencemaran', 'sumberpencemaran', 'limbah', 'polusi', 'tumpahan'];
+      const isPollution =
+        /pencemar|limbah|polusi|tumpahan/i.test(p.name || '') ||
+        /pencemar|limbah|polusi|tumpahan/i.test(p.description || '') ||
+        tags.some((t: string) => POLLUTION_TAGS.includes(t.toLowerCase()));
 
-          return {
-            ...p,
-            category,
-            tags,
-          };
-        });
+      if (isPollution) category = 'SUMBER_PENCEMARAN';
 
-        const categorizedLines = (data.lines || []).map((l: any) => ({
-          ...l,
-          category: categorizeFeature(l.name, l.description || '', 'line'),
-          tags: extractHashtags(l.description || ''),
-          length: l.length || 0,
-        }));
+      return { ...p, category, tags };
+    });
 
-        const categorizedPolygons = (data.polygons || []).map((p: any) => ({
-          ...p,
-          category: categorizeFeature(p.name, p.description || '', 'polygon'),
-          tags: extractHashtags(p.description || ''),
-          area_ha: p.area_ha || 0,
-        }));
+    const categorizedLines = rawLines.map((l: any) => ({
+      ...l,
+      category: categorizeFeature(l.name, l.description || '', 'line'),
+      tags: extractHashtags(l.description || ''),
+      length: l.length || 0,
+    }));
 
-        const categorizedData = {
-          points: categorizedPoints,
-          lines: categorizedLines,
-          polygons: categorizedPolygons,
-        };
-        setGeoData(categorizedData);
-        setStationPoints(categorizedPoints);
-        await loadAllMedia(categorizedPoints);
+    const categorizedPolygons = rawPolygons.map((p: any) => ({
+      ...p,
+      category: categorizeFeature(p.name, p.description || '', 'polygon'),
+      tags: extractHashtags(p.description || ''),
+      area_ha: p.area_ha || 0,
+    }));
 
-        if (categorizedPoints.length) {
-          setActiveStation(categorizedPoints[0]);
-          setActiveIdx(0);
-        }
-      } catch (err: any) {
-        setError(err.response?.data?.detail || 'Gagal load data');
-      } finally {
-        setLoading(false);
-      }
+    const categorizedData = {
+      points: categorizedPoints,
+      lines: categorizedLines,
+      polygons: categorizedPolygons,
     };
+    setGeoData(categorizedData);
+    setStationPoints(categorizedPoints);
+    await loadAllMedia(categorizedPoints);
+
+    if (categorizedPoints.length) {
+      setActiveStation(categorizedPoints[0]);
+      setActiveIdx(0);
+    }
+  } catch (err: any) {
+    setError(err.response?.data?.detail || 'Gagal load data');
+  } finally {
+    setLoading(false);
+  }
+};
     loadData();
   }, []);
 
@@ -2686,8 +2772,13 @@ useEffect(() => {
   if (!session?.accessToken) return; // hanya user login
 
   const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'wss://api.cipamingkis.com';
-  const ws = new WebSocket(`${WS_URL}/ws/frontend`);
+  const token = session?.accessToken;
 
+  const wsUrl = token
+    ? `${WS_URL}/ws/frontend?token=${encodeURIComponent(token)}`
+    : `${WS_URL}/ws/frontend`;
+
+  const ws = new WebSocket(wsUrl);
 
 
 
@@ -2775,7 +2866,7 @@ useEffect(() => {
 
   const fetchUgvs = async () => {
     try {
-      const res = await axios.get(`${API_URL}/ugv/list`, {
+      const res = await axios.get(`${REALTIME_URL}/ugv/list`, {
         headers: { Authorization: `Bearer ${session.accessToken}` },
       });
       // Response: { items: [{ id, name, lat, lon, webrtc_url, status, battery }] }
@@ -3101,19 +3192,19 @@ if (error) {
 
 
     {/* LIVE COUNT INDICATOR */}
-    {liveRooms.length > 0 && (
-      <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[998]
-        flex items-center gap-2 bg-black/75 backdrop-blur-md px-3 py-1.5
-        rounded-full shadow-lg border border-red-500/40 pointer-events-none">
-        <span className="relative flex h-2 w-2">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
-        </span>
-        <span className="text-[11px] font-bold text-white tracking-wide">
-          {liveRooms.length} LIVE
-        </span>
-      </div>
-    )}
+          {liveRooms.length > 0 && (
+            <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[998]
+              flex items-center gap-2 bg-black/75 backdrop-blur-md px-3 py-1.5
+              rounded-full shadow-lg border border-red-500/40 pointer-events-none">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
+              </span>
+              <span className="text-[11px] font-bold text-white tracking-wide">
+                {liveRooms.length} LIVE
+              </span>
+            </div>
+          )}
         {/* SIDE PANEL */}
           <div
             className={`
@@ -3180,8 +3271,21 @@ if (error) {
                     onClick={() => setIsProfileOpen(!isProfileOpen)}
                     className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-gray-200 dark:bg-[#2a2a4e] hover:bg-gray-300 dark:hover:bg-[#3a3a5e] transition text-sm font-medium text-[#1a1a2e] dark:text-white"
                   >
-                    <span className="w-6 h-6 rounded-full bg-gradient-to-br from-[#00c8ff] to-blue-600 text-white flex items-center justify-center text-xs font-semibold shadow-md">
-                      {session.user?.email?.charAt(0).toUpperCase() || "U"}
+                    <span className="w-6 h-6 rounded-full overflow-hidden bg-gradient-to-br from-[#00c8ff] to-blue-600 text-white flex items-center justify-center text-xs font-semibold shadow-md shrink-0">
+                      {userAvatar ? (
+                        <img
+                          src={userAvatar}
+                          alt={session.user?.email || 'User'}
+                          className="w-full h-full object-cover"
+                          onError={() => setUserAvatar(null)}
+                        />
+                      ) : (
+                        ((session.user as any)?.full_name ||
+                          session.user?.name ||
+                          session.user?.email ||
+                          'U'
+                        ).charAt(0).toUpperCase()
+                      )}
                     </span>
                     <span className="hidden sm:inline max-w-[80px] truncate text-xs">
                       {session.user?.email?.split('@')[0] || 'User'}
@@ -3208,20 +3312,9 @@ if (error) {
                         <i className="fa-solid fa-user text-base text-[#00c8ff]"></i>
                         <span>Lihat Profil</span>
                       </button>
-
-                      <button
-                        onClick={() => {
-                          signOut();
-                          setIsProfileOpen(false);
-                        }}
-                        className="w-full text-left px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition flex items-center gap-2 border-t border-gray-100 dark:border-[#2a2a4e]"
-                      >
-                        <i className="fa-solid fa-right-from-bracket text-base"></i>
-                        <span>Logout</span>
-                      </button>
                     </div>
                   )}
-                                  </div>
+               </div>
               ) : (
                 <button
                   onClick={() => signIn()}

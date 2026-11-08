@@ -181,10 +181,7 @@ export default function ProfilePage() {
                 {tab === 'finance'  && <FinanceTab role={role} />}
                 {tab === 'activity' && <ActivityTab profile={profile} activity={activity} />}
                 {tab === 'security' && (
-                  <SecurityTab
-                    sessions={sessions}
-                    onSessionRevoked={(id) => setSessions(p => p.filter(x => x.id !== id))}
-                  />
+                 <SecurityTab onSessionRevoked={(id) => console.log('revoked', id)} />
                 )}
 
               </div>
