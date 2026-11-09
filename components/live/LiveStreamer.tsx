@@ -13,6 +13,8 @@ interface Props {
   onStop?: () => void;
 }
 
+type Facing = 'user' | 'environment';
+
 function pickMimeType(): string {
   if (typeof MediaRecorder === 'undefined') return '';
   const candidates = [
@@ -46,23 +48,84 @@ function describeMediaError(e: any): string {
   return e?.message || 'Gagal akses kamera/mic';
 }
 
+// 🔥 Helper: request stream dengan facing mode tertentu
+async function requestStream(facing: Facing): Promise<MediaStream> {
+  return navigator.mediaDevices.getUserMedia({
+    video: {
+      facingMode: { ideal: facing },   // 'ideal' bukan 'exact' → fallback aman di desktop
+      width: { ideal: 854 },
+      height: { ideal: 480 },
+      frameRate: { ideal: 15, max: 20 },
+    },
+    audio: { echoCancellation: true, noiseSuppression: true },
+  });
+}
+
 export default function LiveStreamer({ roomId, token, buildingName, onStop }: Props) {
   const [live, setLive] = useState(false);
   const [viewers, setViewers] = useState(0);
   const [err, setErr] = useState<string | null>(null);
   const [seconds, setSeconds] = useState(0);
+  const [facing, setFacing] = useState<Facing>('environment'); // 🔥 default belakang
+  const [hasMultipleCams, setHasMultipleCams] = useState(false);
+  const [switching, setSwitching] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const facingRef = useRef<Facing>('environment');
 
   const liveRef = useRef(false);
   const startingRef = useRef(false);
   const onStopRef = useRef(onStop);
 
   useEffect(() => { onStopRef.current = onStop; }, [onStop]);
+  useEffect(() => { facingRef.current = facing; }, [facing]);
+
+  // 🔧 Helper: bikin MediaRecorder untuk stream tertentu & langsung start
+  const attachRecorder = useCallback((stream: MediaStream): MediaRecorder | null => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return null;
+
+    const mime = pickMimeType();
+    if (!mime) {
+      setErr('Browser tidak mendukung MediaRecorder WebM.');
+      return null;
+    }
+    const { video: vbr, audio: abr } = pickBitrate();
+
+    let rec: MediaRecorder;
+    try {
+      rec = new MediaRecorder(stream, {
+        mimeType: mime,
+        videoBitsPerSecond: vbr,
+        audioBitsPerSecond: abr,
+      });
+    } catch (e: any) {
+      setErr(`Gagal inisialisasi recorder: ${e?.message || e}`);
+      return null;
+    }
+
+    rec.ondataavailable = async (e) => {
+      if (!e.data || e.data.size === 0) return;
+      const sock = wsRef.current;
+      if (!sock || sock.readyState !== WebSocket.OPEN) return;
+      if (sock.bufferedAmount > MAX_BUFFERED_BYTES) return;
+      try {
+        const buf = await e.data.arrayBuffer();
+        if (sock.readyState === WebSocket.OPEN) sock.send(buf);
+      } catch {}
+    };
+
+    rec.onerror = (e: any) => {
+      setErr(`Recorder error: ${e?.error?.message || 'tidak diketahui'}`);
+    };
+
+    rec.start(1000);
+    return rec;
+  }, []);
 
   const cleanup = useCallback((notifyStop: boolean) => {
     const wasLive = liveRef.current;
@@ -119,14 +182,7 @@ export default function LiveStreamer({ roomId, token, buildingName, onStop }: Pr
 
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 854 },
-          height: { ideal: 480 },
-          frameRate: { ideal: 15, max: 20 },
-        },
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
+      stream = await requestStream(facingRef.current);
     } catch (e: any) {
       setErr(describeMediaError(e));
       startingRef.current = false;
@@ -136,52 +192,28 @@ export default function LiveStreamer({ roomId, token, buildingName, onStop }: Pr
     streamRef.current = stream;
     if (videoRef.current) videoRef.current.srcObject = stream;
 
+    // 🔥 Deteksi >1 kamera (paling andal setelah permission granted)
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams = devices.filter(d => d.kind === 'videoinput');
+      setHasMultipleCams(cams.length > 1);
+    } catch {}
+
     // ── WS ke backend realtime (port 5002), path /api/ws/live/:roomId
     const ws = new WebSocket(liveWsUrl(roomId, 'streamer', token));
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
     ws.onopen = () => {
-      const mime = pickMimeType();
-      if (!mime) {
-        setErr('Browser tidak mendukung MediaRecorder WebM.');
-        cleanup(false);
-        return;
-      }
+      // 🔥 Pakai streamRef.current (bukan closure `stream`) supaya kalau user
+      // sempat switch kamera di window antara getUserMedia dan onopen, tetap benar.
+      const activeStream = streamRef.current;
+      if (!activeStream) { cleanup(false); return; }
 
-      const { video: vbr, audio: abr } = pickBitrate();
+      const rec = attachRecorder(activeStream);
+      if (!rec) { cleanup(false); return; }
 
-      let rec: MediaRecorder;
-      try {
-        rec = new MediaRecorder(stream, {
-          mimeType: mime,
-          videoBitsPerSecond: vbr,
-          audioBitsPerSecond: abr,
-        });
-      } catch (e: any) {
-        setErr(`Gagal inisialisasi recorder: ${e?.message || e}`);
-        cleanup(false);
-        return;
-      }
-
-      rec.ondataavailable = async (e) => {
-        if (!e.data || e.data.size === 0) return;
-        const sock = wsRef.current;
-        if (!sock || sock.readyState !== WebSocket.OPEN) return;
-        if (sock.bufferedAmount > MAX_BUFFERED_BYTES) return;
-        try {
-          const buf = await e.data.arrayBuffer();
-          if (sock.readyState === WebSocket.OPEN) sock.send(buf);
-        } catch {}
-      };
-
-      rec.onerror = (e: any) => {
-        setErr(`Recorder error: ${e?.error?.message || 'tidak diketahui'}`);
-      };
-
-      rec.start(1000);
       recorderRef.current = rec;
-
       liveRef.current = true;
       setLive(true);
       startingRef.current = false;
@@ -212,7 +244,53 @@ export default function LiveStreamer({ roomId, token, buildingName, onStop }: Pr
         onStopRef.current?.();
       }
     };
-  }, [roomId, token, cleanup]);
+  }, [roomId, token, cleanup, attachRecorder]);
+
+  // 🔥 SWITCH KAMERA DEPAN ↔ BELAKANG
+  const switchCamera = useCallback(async () => {
+    if (switching) return;
+    setSwitching(true);
+    const nextFacing: Facing = facingRef.current === 'user' ? 'environment' : 'user';
+
+    try {
+      // 1. Ambil stream baru DULU — kalau gagal, belum ada yang berubah
+      const newStream = await requestStream(nextFacing);
+
+      if (liveRef.current) {
+        // === Sedang live → restart recorder, WS TETAP TERBUKA ===
+        const oldRec = recorderRef.current;
+        if (oldRec && oldRec.state !== 'inactive') {
+          try { oldRec.stop(); } catch {}
+        }
+        recorderRef.current = null;
+
+        // Stop track lama
+        streamRef.current?.getTracks().forEach(t => { try { t.stop(); } catch {} });
+
+        streamRef.current = newStream;
+        if (videoRef.current) videoRef.current.srcObject = newStream;
+
+        const rec = attachRecorder(newStream);
+        if (rec) recorderRef.current = rec;
+        else toast.error('Gagal restart recorder setelah switch kamera');
+      } else {
+        // === Belum live → cukup swap preview ===
+        streamRef.current?.getTracks().forEach(t => { try { t.stop(); } catch {} });
+        streamRef.current = newStream;
+        if (videoRef.current) videoRef.current.srcObject = newStream;
+      }
+
+      setFacing(nextFacing);
+      toast.success(
+        nextFacing === 'user' ? '📷 Kamera depan aktif' : '📷 Kamera belakang aktif',
+        { duration: 1500, position: 'bottom-center' }
+      );
+    } catch (e: any) {
+      toast.error(describeMediaError(e));
+    } finally {
+      setSwitching(false);
+    }
+  }, [switching, attachRecorder]);
 
   useEffect(() => {
     return () => { cleanup(false); };
@@ -250,6 +328,22 @@ export default function LiveStreamer({ roomId, token, buildingName, onStop }: Pr
               <i className="fa-solid fa-eye" /> {viewers}
             </div>
           </>
+        )}
+
+        {/* 🔥 TOMBOL SWITCH KAMERA — hanya tampil kalau device punya >1 kamera */}
+        {hasMultipleCams && (
+          <button
+            onClick={switchCamera}
+            disabled={switching}
+            aria-label="Ganti kamera"
+            title={facing === 'user' ? 'Pakai kamera belakang' : 'Pakai kamera depan'}
+            className="absolute bottom-3 right-3 z-10 w-11 h-11 rounded-full
+                       bg-black/55 hover:bg-black/75 active:scale-95
+                       backdrop-blur-md text-white border border-white/30
+                       flex items-center justify-center transition disabled:opacity-50"
+          >
+            <i className={`fa-solid ${switching ? 'fa-spinner fa-spin' : 'fa-camera-rotate'} text-base`} />
+          </button>
         )}
 
         {!live && (
