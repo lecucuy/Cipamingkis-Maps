@@ -129,15 +129,12 @@ export default function LoginForm({ redirectTo = "/", onSuccess }: LoginFormProp
         </button>
       </form>
 
-      {/* Link Lupa Password dan Daftar */}
-      <div className="mt-4 text-center text-sm text-gray-500 dark:text-gray-400 space-y-1">
+      {/* Link Lupa Password */}
+      <div className="mt-4 text-center text-sm text-gray-500 dark:text-gray-400">
         <p>
           <a href="/forgot-password" className="text-[#00c8ff] hover:underline">
             Lupa password?
           </a>
-        </p>
-        <p>
-          Belum punya akun? <a href="/register" className="text-[#00c8ff] hover:underline">Daftar</a>
         </p>
       </div>
     </div>

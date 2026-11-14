@@ -5,9 +5,19 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useSession } from 'next-auth/react';
 import axios from 'axios';
-import Model3DViewer from '@/components/Model3DViewer';
+import dynamic from 'next/dynamic';
 import { toast } from 'react-hot-toast';
 import UploadModal from '@/components/media/UploadModal';
+
+const Model3DViewer = dynamic(() => import('@/components/Model3DViewer'), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-[360px] sm:h-[450px] bg-neutral-950 rounded-xl flex flex-col items-center justify-center gap-3 border border-neutral-800">
+      <div className="w-8 h-8 border-3 border-[#00c8ff] border-t-transparent rounded-full animate-spin"></div>
+      <p className="text-white/70 text-xs font-medium">Memuat 3D Engine...</p>
+    </div>
+  ),
+});
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
@@ -101,6 +111,21 @@ export default function BuildingMedia({
   const [activeTab, setActiveTab] = useState<'photo' | 'video' | 'maintenance' | 'model_3d'>('photo');
   const [selectedModelUrl, setSelectedModelUrl] = useState<string | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
+
+  const models3D = useMemo(() => media.filter(m => m.media_type === 'model_3d'), [media]);
+  const effectiveModelUrl = selectedModelUrl || (models3D.length > 0 ? models3D[models3D.length - 1].file_url : null);
+  const [is3DActive, setIs3DActive] = useState(false);
+
+  const selectedModelItem = useMemo(() => {
+    return models3D.find(m => m.file_url === effectiveModelUrl) || (models3D.length > 0 ? models3D[models3D.length - 1] : null);
+  }, [models3D, effectiveModelUrl]);
+
+  const handleTabClick = useCallback((tabKey: 'photo' | 'video' | 'maintenance' | 'model_3d') => {
+    if (tabKey === 'model_3d' && !selectedModelUrl && models3D.length > 0) {
+      setSelectedModelUrl(models3D[models3D.length - 1].file_url);
+    }
+    setActiveTab(tabKey);
+  }, [models3D, selectedModelUrl]);
   const [likeCounts, setLikeCounts] = useState<Record<string, { count: number; liked: boolean }>>({});
   const [shareCounts, setShareCounts] = useState<Record<string, number>>({});
   const [viewCounts, setViewCounts] = useState<Record<string, number>>({});
@@ -124,6 +149,9 @@ export default function BuildingMedia({
   const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
   const [mutedVideos, setMutedVideos] = useState<Record<string, boolean>>({});
   const [pausedVideos, setPausedVideos] = useState<Record<string, boolean>>({});
+  const [bufferingVideos, setBufferingVideos] = useState<Record<string, boolean>>({});
+  const [videoProgress, setVideoProgress] = useState<Record<string, { played: number; buffered: number }>>({});
+  const [lightboxBuffering, setLightboxBuffering] = useState(false);
 
   // ====== EDIT ======
   const [editingMedia, setEditingMedia] = useState<MediaItem | null>(null);
@@ -462,6 +490,7 @@ export default function BuildingMedia({
           if (entry.isIntersecting && entry.intersectionRatio >= 0.6) {
             setActiveVideoId(id);
             trackView(id);
+            el.preload = 'auto';
             el.muted = mutedVideos[id] ?? true;
             if (!pausedVideos[id]) el.play().catch(() => {});
           } else {
@@ -486,6 +515,36 @@ export default function BuildingMedia({
       const prev = videoRefsMap.current.get(id);
       if (prev) { ioRef.current?.unobserve(prev); videoRefsMap.current.delete(id); }
     }
+  }, []);
+
+  // ============ VIDEO BUFFERING HANDLERS ============
+  const handleVideoWaiting = useCallback((id: string) => {
+    setBufferingVideos((prev) => ({ ...prev, [id]: true }));
+  }, []);
+
+  const handleVideoCanPlay = useCallback((id: string) => {
+    setBufferingVideos((prev) => ({ ...prev, [id]: false }));
+  }, []);
+
+  const handleVideoProgress = useCallback((id: string, el: HTMLVideoElement) => {
+    if (!el.duration) return;
+    const played = (el.currentTime / el.duration) * 100;
+    let buffered = 0;
+    if (el.buffered.length > 0) {
+      for (let i = 0; i < el.buffered.length; i++) {
+        if (el.buffered.start(i) <= el.currentTime && el.currentTime <= el.buffered.end(i)) {
+          buffered = (el.buffered.end(i) / el.duration) * 100;
+          break;
+        }
+      }
+      if (buffered === 0 && el.buffered.length > 0) {
+        buffered = (el.buffered.end(el.buffered.length - 1) / el.duration) * 100;
+      }
+    }
+    setVideoProgress((prev) => ({
+      ...prev,
+      [id]: { played, buffered },
+    }));
   }, []);
 
   const toggleVideoMute = (id: string) => {
@@ -524,16 +583,21 @@ export default function BuildingMedia({
 
   // ============ MODEL 3D AUTO SELECT ============
   useEffect(() => {
-    if (activeTab === 'model_3d') {
-      const models = media.filter(m => m.media_type === 'model_3d');
-      if (models.length > 0) {
-        const lastModel = models[models.length - 1];
-        if (!selectedModelUrl || !models.some(m => m.file_url === selectedModelUrl)) {
-          setSelectedModelUrl(lastModel.file_url);
-        }
-      } else setSelectedModelUrl(null);
+    if (models3D.length > 0) {
+      if (!selectedModelUrl || !models3D.some(m => m.file_url === selectedModelUrl)) {
+        setSelectedModelUrl(models3D[models3D.length - 1].file_url);
+      }
+    } else if (selectedModelUrl) {
+      setSelectedModelUrl(null);
     }
-  }, [activeTab, media, selectedModelUrl]);
+  }, [models3D, selectedModelUrl]);
+
+  // ============ MODEL 3D VIEW TRACKING ============
+  useEffect(() => {
+    if (activeTab === 'model_3d' && selectedModelItem?._id) {
+      trackView(selectedModelItem._id);
+    }
+  }, [activeTab, selectedModelItem?._id, trackView]);
 
   // ============ LIKE ============
   const toggleLike = async (mediaId: string) => {
@@ -668,14 +732,40 @@ export default function BuildingMedia({
             <span className="text-lg">📸</span>
             <span className="truncate">Media & Riwayat {buildingName}</span>
           </h4>
-          <button
-            type="button"
-            onClick={() => setFullscreenMode(true)}
-            className="w-8 h-8 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-700 transition shrink-0"
-            title="Fullscreen Slide"
-          >
-            <i className="fa-solid fa-expand" />
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {(activeTab === 'photo' || activeTab === 'maintenance') && !loading && filtered.length > 0 && (
+              <div className="flex items-center gap-0.5 bg-gray-100 dark:bg-gray-800 rounded-lg p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setViewMode('feed')}
+                  className={`px-2 py-1 rounded text-[11px] transition ${
+                    viewMode === 'feed' ? 'bg-white dark:bg-gray-700 text-[#00c8ff] shadow-sm' : 'text-gray-500'
+                  }`}
+                  title="Tampilan Feed"
+                >
+                  <i className="fa-solid fa-list" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode('grid')}
+                  className={`px-2 py-1 rounded text-[11px] transition ${
+                    viewMode === 'grid' ? 'bg-white dark:bg-gray-700 text-[#00c8ff] shadow-sm' : 'text-gray-500'
+                  }`}
+                  title="Tampilan Grid"
+                >
+                  <i className="fa-solid fa-table-cells" />
+                </button>
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => setFullscreenMode(true)}
+              className="w-8 h-8 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-700 transition shrink-0"
+              title="Fullscreen Slide"
+            >
+              <i className="fa-solid fa-expand" />
+            </button>
+          </div>
         </div>
       )}
 
@@ -685,7 +775,7 @@ export default function BuildingMedia({
           ? 'flex items-center gap-1 px-4 py-2 bg-black border-b border-white/10 overflow-x-auto shrink-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
           : 'flex items-center gap-1 border-b border-gray-200 dark:border-gray-700'
       }>
-        <div className="flex gap-1 flex-1 min-w-0">
+        <div className="flex gap-1 flex-1 min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {[
             { key: 'photo', label: '📷 Foto' },
             { key: 'video', label: '🎥 Video' },
@@ -698,8 +788,8 @@ export default function BuildingMedia({
               <button
                 key={tab.key}
                 type="button"
-                onClick={() => setActiveTab(tab.key as any)}
-                className={`px-3 py-2 text-xs font-medium rounded-t-lg transition-all flex items-center gap-1 whitespace-nowrap ${
+                onClick={() => handleTabClick(tab.key as any)}
+                className={`px-3 py-2 text-xs font-medium rounded-t-lg transition-all flex items-center gap-1 whitespace-nowrap shrink-0 ${
                   isActive
                     ? fullscreenMode
                       ? 'bg-white/20 text-white shadow-md'
@@ -718,71 +808,295 @@ export default function BuildingMedia({
           })}
         </div>
 
-        {!fullscreenMode && (activeTab === 'photo' || activeTab === 'maintenance') && !loading && filtered.length > 0 && (
-          <div className="flex items-center gap-0.5 bg-gray-100 dark:bg-gray-800 rounded-lg p-0.5 mr-1 shrink-0">
-            <button
-              type="button"
-              onClick={() => setViewMode('feed')}
-              className={`px-2 py-1 rounded text-[11px] transition ${
-                viewMode === 'feed' ? 'bg-white dark:bg-gray-700 text-[#00c8ff] shadow-sm' : 'text-gray-500'
-              }`}
-              title="Tampilan Feed"
-            >
-              <i className="fa-solid fa-list" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode('grid')}
-              className={`px-2 py-1 rounded text-[11px] transition ${
-                viewMode === 'grid' ? 'bg-white dark:bg-gray-700 text-[#00c8ff] shadow-sm' : 'text-gray-500'
-              }`}
-              title="Tampilan Grid"
-            >
-              <i className="fa-solid fa-table-cells" />
-            </button>
-          </div>
-        )}
       </div>
 
       {/* ===== CONTENT ===== */}
       <div className={fullscreenMode ? 'flex-1 min-h-0 overflow-y-auto bg-neutral-950' : ''}>
-        {activeTab === 'model_3d' ? (
-          <div className={fullscreenMode ? 'p-4 space-y-3' : 'space-y-3'}>
-            <Model3DViewer
-              url={selectedModelUrl}
-              className={
-                fullscreenMode
-                  ? 'w-full h-[calc(100vh-260px)] min-h-[400px]'
-                  : 'w-full h-[400px] sm:h-[500px]'
-              }
-            />
-            {filtered.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {filtered.map((item) => (
-                  <button
-                    key={item._id}
-                    type="button"
-                    onClick={() => setSelectedModelUrl(item.file_url)}
-                    className={`px-3 py-1.5 text-xs rounded-lg border transition-all ${
-                      selectedModelUrl === item.file_url
-                        ? 'border-[#00c8ff] bg-[#00c8ff]/10 text-[#00c8ff]'
-                        : fullscreenMode
-                          ? 'border-white/20 text-white/80 hover:border-[#00c8ff]'
-                          : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-[#00c8ff]'
-                    }`}
-                  >
-                    <i className="fa-solid fa-cube mr-1"></i>
-                    {item.description || 'Model 3D'}
-                  </button>
-                ))}
+        {/* ===== TAB 3D ===== */}
+        <div className={activeTab === 'model_3d' ? (fullscreenMode ? 'p-4 space-y-4' : 'space-y-4') : 'hidden'}>
+          {models3D.length > 0 && selectedModelItem ? (
+            <>
+              {/* Selector jika ada lebih dari 1 model 3D */}
+              {models3D.length > 1 && (
+                <div className="flex flex-wrap gap-2 pb-1 border-b border-gray-100 dark:border-white/5">
+                  <span className="text-[11px] text-gray-500 dark:text-gray-400 self-center mr-1">
+                    Pilih Objek:
+                  </span>
+                  {models3D.map((item, idx) => (
+                    <button
+                      key={item._id}
+                      type="button"
+                      onClick={() => setSelectedModelUrl(item.file_url)}
+                      className={`px-2.5 py-1 text-xs rounded-lg border transition-all flex items-center gap-1.5 cursor-pointer ${
+                        effectiveModelUrl === item.file_url
+                          ? 'border-[#00c8ff] bg-[#00c8ff]/10 text-[#00c8ff] font-semibold'
+                          : fullscreenMode
+                            ? 'border-white/20 text-white/80 hover:border-[#00c8ff]'
+                            : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-[#00c8ff]'
+                      }`}
+                    >
+                      <i className="fa-solid fa-cube text-[10px]"></i>
+                      <span className="max-w-[140px] truncate">{item.description || `Model ${idx + 1}`}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* AREA 3D: Mode Ringan (Preview Card) vs Mode Interaktif (WebGL) */}
+              {is3DActive ? (
+                <div className="relative">
+                  <Model3DViewer
+                    url={effectiveModelUrl}
+                    className={
+                      fullscreenMode
+                        ? 'w-full h-[calc(100vh-320px)] min-h-[420px]'
+                        : 'w-full h-[380px] sm:h-[460px]'
+                    }
+                    onClose={() => setIs3DActive(false)}
+                  />
+                  {/* Floating social bar di dalam 3D Interaktif */}
+                  <div className="absolute top-2.5 left-2.5 z-10 flex items-center gap-2 bg-black/70 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/10 shadow-lg">
+                    <button
+                      type="button"
+                      onClick={() => toggleLike(selectedModelItem._id)}
+                      className={`flex items-center gap-1 text-xs font-semibold transition cursor-pointer ${
+                        likeCounts[selectedModelItem._id]?.liked ? 'text-red-400' : 'text-white/80 hover:text-white'
+                      }`}
+                      title={likeCounts[selectedModelItem._id]?.liked ? 'Batal Suka' : 'Suka'}
+                    >
+                      <i className={`fa-${likeCounts[selectedModelItem._id]?.liked ? 'solid text-red-500 animate-pulse' : 'regular'} fa-heart`}></i>
+                      <span className="tabular-nums">{likeCounts[selectedModelItem._id]?.count || 0}</span>
+                    </button>
+                    <span className="text-white/30 text-xs">•</span>
+                    <span className="flex items-center gap-1 text-xs text-white/80" title="Jumlah tayangan">
+                      <i className="fa-regular fa-eye text-[#00c8ff]"></i>
+                      <span className="tabular-nums">{viewCounts[selectedModelItem._id] || 0}</span>
+                    </span>
+                    <span className="text-white/30 text-xs">•</span>
+                    <button
+                      type="button"
+                      onClick={() => handleShare(selectedModelItem)}
+                      className="flex items-center gap-1 text-xs font-medium text-white/80 hover:text-white transition cursor-pointer"
+                      title="Bagikan"
+                    >
+                      <i className="fa-solid fa-share text-[11px]"></i>
+                      <span className="tabular-nums">{shareCounts[selectedModelItem._id] || 0}</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="relative w-full h-[300px] sm:h-[360px] rounded-xl overflow-hidden bg-gradient-to-br from-neutral-900 via-neutral-950 to-neutral-900 border border-neutral-800 flex flex-col items-center justify-center p-6 text-center select-none shadow-inner">
+                  {/* Grid background effect */}
+                  <div
+                    className="absolute inset-0 opacity-15 pointer-events-none"
+                    style={{
+                      backgroundImage: 'radial-gradient(circle, #00c8ff 1px, transparent 1px)',
+                      backgroundSize: '24px 24px',
+                    }}
+                  />
+
+                  {/* Top-right View Badge */}
+                  <div className="absolute top-3 right-3 z-10">
+                    <span className="px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-md text-[11px] text-white/90 border border-white/10 flex items-center gap-1.5 font-medium shadow-sm">
+                      <i className="fa-regular fa-eye text-[#00c8ff]"></i>
+                      <span className="tabular-nums">{viewCounts[selectedModelItem._id] || 0} tayangan</span>
+                    </span>
+                  </div>
+
+                  {/* Icon 3D */}
+                  <div className="relative mb-3">
+                    <div className="w-16 h-16 rounded-2xl bg-[#00c8ff]/10 border border-[#00c8ff]/30 flex items-center justify-center text-[#00c8ff] text-2xl shadow-xl shadow-[#00c8ff]/10">
+                      <i className="fa-solid fa-cube"></i>
+                    </div>
+                    <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#00c8ff] opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-3 w-3 bg-[#00c8ff]"></span>
+                    </span>
+                  </div>
+
+                  <h4 className="text-white font-semibold text-sm mb-1 max-w-sm truncate">
+                    {selectedModelItem.description || 'Model 3D Objek Bangunan'}
+                  </h4>
+                  <p className="text-gray-400 text-xs max-w-xs mb-5">
+                    Objek 3D siap dilihat. Muat tampilan 3D saat ingin memutar & memperbesar objek tanpa membebani browser.
+                  </p>
+
+                  <div className="flex items-center gap-2 flex-wrap justify-center z-10">
+                    <button
+                      type="button"
+                      onClick={() => setIs3DActive(true)}
+                      className="px-4 py-2.5 bg-gradient-to-r from-[#00c8ff] to-blue-600 hover:from-[#00b0e0] hover:to-blue-700 text-white rounded-xl text-xs font-semibold shadow-lg shadow-[#00c8ff]/25 transition flex items-center gap-2 cursor-pointer active:scale-95"
+                    >
+                      <i className="fa-solid fa-eye text-xs"></i>
+                      <span>Lihat 3D Interaktif</span>
+                    </button>
+
+                    {/* Quick Like & Share di Card */}
+                    <button
+                      type="button"
+                      onClick={() => toggleLike(selectedModelItem._id)}
+                      className={`px-3 py-2.5 rounded-xl text-xs font-semibold backdrop-blur-md border transition flex items-center gap-1.5 cursor-pointer active:scale-95 ${
+                        likeCounts[selectedModelItem._id]?.liked
+                          ? 'bg-red-500/20 border-red-500/50 text-red-400 hover:bg-red-500/30'
+                          : 'bg-white/10 hover:bg-white/20 border-white/15 text-white'
+                      }`}
+                      title={likeCounts[selectedModelItem._id]?.liked ? 'Batal Suka' : 'Suka'}
+                    >
+                      <i className={`fa-${likeCounts[selectedModelItem._id]?.liked ? 'solid text-red-500' : 'regular'} fa-heart text-sm`}></i>
+                      <span className="tabular-nums">{likeCounts[selectedModelItem._id]?.count || 0}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleShare(selectedModelItem)}
+                      className="px-3 py-2.5 rounded-xl text-xs font-semibold backdrop-blur-md border border-white/15 bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1.5 cursor-pointer active:scale-95"
+                      title="Bagikan"
+                    >
+                      <i className="fa-solid fa-share text-xs"></i>
+                      <span className="tabular-nums">{shareCounts[selectedModelItem._id] || 0}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ===== INFO UPLOADER & DETAIL MODEL (SESUAI REQUEST USER) ===== */}
+              {(() => {
+                const uploader = getUploaderLabel(selectedModelItem);
+                const uploadDate = formatDateID(selectedModelItem.timestamp || selectedModelItem.created_at, true);
+                return (
+                  <div className={`rounded-xl p-3.5 space-y-2.5 border transition ${
+                    fullscreenMode
+                      ? 'bg-neutral-900 border-white/10 text-white'
+                      : 'bg-gray-50 dark:bg-[#1f1f38] border-gray-200 dark:border-gray-700/60 text-gray-800 dark:text-gray-100'
+                  }`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        {/* Avatar */}
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
+                          uploader.deleted ? 'bg-gray-600 text-gray-300' :
+                          uploader.isMe ? 'bg-[#00c8ff] text-white shadow-sm' :
+                          'bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-sm'
+                        }`}>
+                          {uploader.deleted ? '?' : uploader.name.charAt(0).toUpperCase()}
+                        </div>
+
+                        {/* Name & Role */}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-xs font-semibold truncate">
+                              {uploader.deleted ? uploader.name : `@${uploader.name}`}
+                            </span>
+                            {uploader.isMe && !uploader.deleted && (
+                              <span className="text-[9px] bg-[#00c8ff]/20 text-[#00c8ff] px-1.5 py-0.5 rounded-full font-medium">
+                                Anda
+                              </span>
+                            )}
+                            {uploader.role && !uploader.deleted && (
+                              <span className={`text-[9px] px-1.5 py-0.5 rounded-full uppercase font-medium ${
+                                fullscreenMode
+                                  ? 'bg-white/10 text-white/80'
+                                  : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
+                              }`}>
+                                {uploader.role}
+                              </span>
+                            )}
+                          </div>
+                          <p className={`text-[10px] flex items-center gap-1 mt-0.5 ${
+                            fullscreenMode ? 'text-white/60' : 'text-gray-500 dark:text-gray-400'
+                          }`}>
+                            <i className="fa-regular fa-calendar"></i>
+                            <span>Diupload pada: {uploadDate}</span>
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Actions */}
+                      {canModifyMedia(selectedModelItem) && (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => openEditModal(selectedModelItem)}
+                            className={`p-1.5 rounded-lg transition ${
+                              fullscreenMode
+                                  ? 'bg-white/10 hover:bg-white/20 text-white'
+                                  : 'bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200'
+                            }`}
+                            title="Edit keterangan model"
+                          >
+                            <i className="fa-solid fa-pen text-xs"></i>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Catatan / Keterangan */}
+                    {selectedModelItem.description && (
+                      <p className={`text-xs p-2 rounded-lg border ${
+                        fullscreenMode
+                          ? 'bg-black/30 border-white/5 text-white/90'
+                          : 'bg-white dark:bg-black/20 border-gray-100 dark:border-white/5 text-gray-700 dark:text-gray-300'
+                      }`}>
+                        {selectedModelItem.description}
+                      </p>
+                    )}
+
+                    {/* Social Media Action Row */}
+                    <div className={`flex items-center gap-4 pt-2.5 border-t mt-2 ${
+                      fullscreenMode ? 'border-white/10' : 'border-gray-200 dark:border-gray-700/60'
+                    }`}>
+                      {/* Love / Like */}
+                      <button
+                        type="button"
+                        onClick={() => toggleLike(selectedModelItem._id)}
+                        className={`flex items-center gap-1.5 text-xs font-semibold py-1 px-2.5 rounded-lg transition-all cursor-pointer ${
+                          likeCounts[selectedModelItem._id]?.liked
+                            ? 'text-red-500 bg-red-500/10 dark:bg-red-500/20'
+                            : 'text-gray-600 dark:text-gray-300 hover:text-red-500 hover:bg-gray-100 dark:hover:bg-white/5'
+                        }`}
+                        title={likeCounts[selectedModelItem._id]?.liked ? 'Batal menyukai' : 'Sukai model ini'}
+                      >
+                        <i className={`fa-${likeCounts[selectedModelItem._id]?.liked ? 'solid text-red-500 animate-pulse' : 'regular'} fa-heart text-sm`}></i>
+                        <span className="tabular-nums">{likeCounts[selectedModelItem._id]?.count || 0} Suka</span>
+                      </button>
+
+                      {/* View Count */}
+                      <div
+                        className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400 py-1 px-2 cursor-default"
+                        title="Jumlah pengguna yang melihat model 3D ini"
+                      >
+                        <i className="fa-regular fa-eye text-sm text-[#00c8ff]"></i>
+                        <span className="tabular-nums font-medium">{viewCounts[selectedModelItem._id] || 0} tayangan</span>
+                      </div>
+
+                      {/* Share */}
+                      <button
+                        type="button"
+                        onClick={() => handleShare(selectedModelItem)}
+                        className="ml-auto flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 hover:text-[#00c8ff] hover:bg-[#00c8ff]/10 py-1 px-2.5 rounded-lg transition cursor-pointer"
+                        title="Bagikan link model 3D"
+                      >
+                        <i className="fa-solid fa-share text-xs"></i>
+                        <span className="tabular-nums font-medium">{shareCounts[selectedModelItem._id] || 0} Bagikan</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
+            </>
+          ) : (
+            <div className={`text-center py-12 flex flex-col items-center justify-center ${
+              fullscreenMode ? 'text-white/60' : 'text-gray-400 dark:text-gray-500'
+            }`}>
+              <div className="w-14 h-14 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-gray-400 text-2xl mb-3">
+                <i className="fa-solid fa-cube"></i>
               </div>
-            ) : (
-              <p className={`text-xs text-center py-2 ${fullscreenMode ? 'text-white/60' : 'text-gray-400'}`}>
-                Belum ada model 3D. Upload sekarang!
-              </p>
-            )}
-          </div>
-        ) : activeTab === 'video' ? (
+              <p className="text-sm font-medium">Belum ada model 3D</p>
+              <p className="text-xs mt-0.5 text-gray-400/80">Upload file format .glb atau .gltf untuk menampilkan objek 3D!</p>
+            </div>
+          )}
+        </div>
+
+        {activeTab === 'video' ? (
           <div
             ref={videoFeedRef}
             className={`relative overflow-y-auto snap-y snap-mandatory bg-black [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
@@ -814,9 +1128,17 @@ export default function BuildingMedia({
                       className="w-full h-full object-contain cursor-pointer"
                       loop
                       playsInline
+                      preload={activeVideoId === item._id || (idx === 0 && !activeVideoId) ? 'auto' : 'none'}
                       muted={isMuted}
                       onClick={() => toggleVideoPlay(item._id)}
                       onDoubleClick={() => toggleVideoFullscreen(item._id)}
+                      onWaiting={() => handleVideoWaiting(item._id)}
+                      onStalled={() => handleVideoWaiting(item._id)}
+                      onPlaying={() => handleVideoCanPlay(item._id)}
+                      onCanPlay={() => handleVideoCanPlay(item._id)}
+                      onLoadedData={() => handleVideoCanPlay(item._id)}
+                      onTimeUpdate={(e) => handleVideoProgress(item._id, e.currentTarget)}
+                      onProgress={(e) => handleVideoProgress(item._id, e.currentTarget)}
                     />
 
                     {isPaused && (
@@ -828,30 +1150,38 @@ export default function BuildingMedia({
                     )}
 
                     <div className="absolute right-3 bottom-24 flex flex-col items-center gap-4 z-10">
-                      <button type="button" onClick={() => toggleLike(item._id)} className="flex flex-col items-center">
-                        <div className={`w-11 h-11 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center ${
-                          likeCounts[item._id]?.liked ? 'text-red-500' : 'text-white'
+                      <button type="button" onClick={() => toggleLike(item._id)} className="flex flex-col items-center cursor-pointer group">
+                        <div className={`w-11 h-11 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center transition group-hover:scale-110 ${
+                          likeCounts[item._id]?.liked ? 'text-red-500 shadow-lg shadow-red-500/25' : 'text-white'
                         }`}>
-                          <i className={`fa-${likeCounts[item._id]?.liked ? 'solid' : 'regular'} fa-heart text-lg`}></i>
+                          <i className={`fa-${likeCounts[item._id]?.liked ? 'solid text-red-500 animate-pulse' : 'regular'} fa-heart text-lg`}></i>
                         </div>
-                        <span className="text-[10px] mt-1 text-white tabular-nums">{likeCounts[item._id]?.count || 0}</span>
+                        <span className="text-[10px] mt-1 text-white tabular-nums font-medium">{likeCounts[item._id]?.count || 0}</span>
                       </button>
 
-                      <button type="button" onClick={() => handleShare(item)} className="flex flex-col items-center">
+                      {/* View count untuk video */}
+                      <div className="flex flex-col items-center cursor-default" title="Jumlah tayangan video">
                         <div className="w-11 h-11 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center text-white">
+                          <i className="fa-regular fa-eye text-lg text-[#00c8ff]"></i>
+                        </div>
+                        <span className="text-[10px] mt-1 text-white tabular-nums font-medium">{viewCounts[item._id] || 0}</span>
+                      </div>
+
+                      <button type="button" onClick={() => handleShare(item)} className="flex flex-col items-center cursor-pointer group">
+                        <div className="w-11 h-11 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center text-white transition group-hover:scale-110">
                           <i className="fa-solid fa-share text-lg"></i>
                         </div>
-                        <span className="text-[10px] mt-1 text-white tabular-nums">{shareCounts[item._id] || 0}</span>
+                        <span className="text-[10px] mt-1 text-white tabular-nums font-medium">{shareCounts[item._id] || 0}</span>
                       </button>
 
-                      <button type="button" onClick={() => toggleVideoMute(item._id)} className="flex flex-col items-center">
+                      <button type="button" onClick={() => toggleVideoMute(item._id)} className="flex flex-col items-center cursor-pointer">
                         <div className="w-11 h-11 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center text-white">
                           <i className={`fa-solid ${isMuted ? 'fa-volume-xmark' : 'fa-volume-high'} text-lg`}></i>
                         </div>
                         <span className="text-[10px] mt-1 text-white">{isMuted ? 'Mute' : 'Sound'}</span>
                       </button>
 
-                      <button type="button" onClick={() => toggleVideoFullscreen(item._id)} className="flex flex-col items-center">
+                      <button type="button" onClick={() => toggleVideoFullscreen(item._id)} className="flex flex-col items-center cursor-pointer">
                         <div className="w-11 h-11 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center text-white">
                           <i className="fa-solid fa-expand text-lg"></i>
                         </div>
@@ -859,7 +1189,7 @@ export default function BuildingMedia({
                       </button>
 
                       {canModifyMedia(item) && (
-                        <button type="button" onClick={() => openEditModal(item)} className="flex flex-col items-center">
+                        <button type="button" onClick={() => openEditModal(item)} className="flex flex-col items-center cursor-pointer">
                           <div className="w-11 h-11 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center text-white">
                             <i className="fa-solid fa-pen text-base"></i>
                           </div>
@@ -914,12 +1244,32 @@ export default function BuildingMedia({
                         <i className="fa-solid fa-chevron-down"></i>
                       </div>
                     )}
+
+                    {/* Buffer loading badge di bawah saat video buffering / kurang lancar */}
+                    {bufferingVideos[item._id] && (
+                      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 px-3.5 py-1.5 bg-black/85 backdrop-blur-md rounded-full border border-[#00c8ff]/60 flex items-center gap-2 shadow-lg shadow-[#00c8ff]/25 pointer-events-none animate-pulse">
+                        <div className="w-3.5 h-3.5 border-2 border-[#00c8ff] border-t-transparent rounded-full animate-spin" />
+                        <span className="text-[11px] font-medium text-white tracking-wide">Memuat buffer video...</span>
+                      </div>
+                    )}
+
+                    {/* Progress & Buffer bar di paling bawah video */}
+                    <div className="absolute bottom-0 left-0 right-0 h-1 bg-white/20 z-20 pointer-events-none overflow-hidden">
+                      <div
+                        className="h-full bg-white/40 transition-all duration-300"
+                        style={{ width: `${Math.min(100, Math.max(0, videoProgress[item._id]?.buffered ?? 0))}%` }}
+                      />
+                      <div
+                        className="h-full bg-[#00c8ff] -mt-1 transition-all duration-150"
+                        style={{ width: `${Math.min(100, Math.max(0, videoProgress[item._id]?.played ?? 0))}%` }}
+                      />
+                    </div>
                   </div>
                 );
               })
             )}
           </div>
-        ) : viewMode === 'grid' ? (
+        ) : activeTab !== 'model_3d' && (viewMode === 'grid' ? (
           <div className={fullscreenMode ? 'p-4 pb-6' : 'pb-2'}>
             {loading ? (
               <div className="flex justify-center py-8">
@@ -950,7 +1300,12 @@ export default function BuildingMedia({
                       >
                         {isVideo ? (
                           <>
-                            <video src={item.file_url} className="w-full h-full object-cover" muted preload="metadata" />
+                            <video
+                              src={`${item.file_url}#t=0.1`}
+                              className="w-full h-full object-cover"
+                              muted
+                              preload="none"
+                            />
                             <div className="absolute inset-0 flex items-center justify-center bg-black/30">
                               <i className="fa-solid fa-play text-white text-2xl drop-shadow-lg" />
                             </div>
@@ -961,6 +1316,7 @@ export default function BuildingMedia({
                             alt={item.description || 'Foto'}
                             className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                             loading="lazy"
+                            decoding="async"
                           />
                         ) : (
                           <div className="w-full h-full flex flex-col items-center justify-center text-gray-400">
@@ -1082,18 +1438,33 @@ export default function BuildingMedia({
                             });
                           }}
                           loading="lazy"
+                          decoding="async"
                         />
                       )}
 
                       {isVideo && (
-                        <video
-                          src={item.file_url}
-                          className={`w-full object-contain bg-black rounded-t-2xl ${
-                            fullscreenMode ? 'max-h-[80vh]' : 'max-h-[500px]'
-                          }`}
-                          controls
-                          playsInline
-                        />
+                        <div className="relative w-full bg-black rounded-t-2xl overflow-hidden flex items-center justify-center">
+                          <video
+                            src={item.file_url}
+                            className={`w-full object-contain ${
+                              fullscreenMode ? 'max-h-[80vh]' : 'max-h-[500px]'
+                            }`}
+                            controls
+                            playsInline
+                            preload="none"
+                            onWaiting={() => handleVideoWaiting(item._id)}
+                            onStalled={() => handleVideoWaiting(item._id)}
+                            onPlaying={() => handleVideoCanPlay(item._id)}
+                            onCanPlay={() => handleVideoCanPlay(item._id)}
+                            onLoadedData={() => handleVideoCanPlay(item._id)}
+                          />
+                          {bufferingVideos[item._id] && (
+                            <div className="absolute bottom-14 left-1/2 -translate-x-1/2 z-20 px-3.5 py-1.5 bg-black/85 backdrop-blur-md rounded-full border border-[#00c8ff]/60 flex items-center gap-2 shadow-lg pointer-events-none animate-pulse">
+                              <div className="w-3.5 h-3.5 border-2 border-[#00c8ff] border-t-transparent rounded-full animate-spin" />
+                              <span className="text-[11px] font-medium text-white">Memuat buffer video...</span>
+                            </div>
+                          )}
+                        </div>
                       )}
 
                       {isDocument && (
@@ -1190,11 +1561,11 @@ export default function BuildingMedia({
                             >
                               {thumbIsVideo ? (
                                 <div className="w-full h-full bg-black flex items-center justify-center relative">
-                                  <video src={thumb.file_url} className="w-full h-full object-cover" muted preload="metadata" />
+                                  <video src={`${thumb.file_url}#t=0.1`} className="w-full h-full object-cover" muted preload="none" />
                                   <i className="fa-solid fa-play text-white text-[10px] absolute" />
                                 </div>
                               ) : (
-                                <img src={thumb.file_url} className="w-full h-full object-cover" loading="lazy" />
+                                <img src={thumb.file_url} className="w-full h-full object-cover" loading="lazy" decoding="async" />
                               )}
                             </button>
                           );
@@ -1286,7 +1657,7 @@ export default function BuildingMedia({
               })
             )}
           </div>
-        )}
+        ))}
       </div>
 
       {/* ===== REGION + UPLOAD (inline only) ===== */}
@@ -1406,14 +1777,28 @@ export default function BuildingMedia({
               )}
 
               {isVideo ? (
-                <video
-                  key={item._id}
-                  src={item.file_url}
-                  controls
-                  autoPlay
-                  playsInline
-                  className="max-h-screen max-w-full"
-                />
+                <div className="relative max-h-screen max-w-full flex items-center justify-center">
+                  <video
+                    key={item._id}
+                    src={item.file_url}
+                    controls
+                    autoPlay
+                    playsInline
+                    preload="auto"
+                    className="max-h-screen max-w-full"
+                    onWaiting={() => setLightboxBuffering(true)}
+                    onStalled={() => setLightboxBuffering(true)}
+                    onPlaying={() => setLightboxBuffering(false)}
+                    onCanPlay={() => setLightboxBuffering(false)}
+                    onLoadedData={() => setLightboxBuffering(false)}
+                  />
+                  {lightboxBuffering && (
+                    <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-40 px-4 py-1.5 bg-black/85 backdrop-blur-md rounded-full border border-[#00c8ff]/60 flex items-center gap-2 shadow-2xl pointer-events-none animate-pulse">
+                      <div className="w-4 h-4 border-2 border-[#00c8ff] border-t-transparent rounded-full animate-spin" />
+                      <span className="text-xs font-medium text-white tracking-wide">Memuat buffer video...</span>
+                    </div>
+                  )}
+                </div>
               ) : isImage ? (
                 <img
                   key={item._id}
@@ -1421,6 +1806,8 @@ export default function BuildingMedia({
                   alt={item.description || 'Media'}
                   className="max-h-screen max-w-full object-contain select-none"
                   draggable={false}
+                  loading="lazy"
+                  decoding="async"
                   onTouchStart={(e) => {
                     lightboxTouchRef.current.startX = e.touches[0].clientX;
                     lightboxTouchRef.current.deltaX = 0;

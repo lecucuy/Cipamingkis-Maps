@@ -30,6 +30,18 @@ import { extractHashtags } from '@/utils/hashtagHelpers';
 import { useHashtagFilter } from '@/hooks/useHashtagFilter';
 import { HashtagFilterBar } from '@/components/HashtagFilterBar';
 import { FeatureDetail } from '@/components/FeatureDetail';
+import dynamic from 'next/dynamic';
+
+const Map3DViewer = dynamic(() => import('@/components/Map3DViewer'), {
+  ssr: false,
+  loading: () => (
+    <div className="absolute inset-0 bg-[#020a1a] flex flex-col items-center justify-center z-[1000]">
+      <div className="w-12 h-12 border-4 border-[#00c8ff] border-t-transparent rounded-full animate-spin mb-3 shadow-lg shadow-[#00c8ff]/30" />
+      <p className="text-white text-sm font-semibold tracking-wide">Memuat Engine Peta 3D...</p>
+      <p className="text-[#00c8ff]/80 text-xs mt-1 font-mono">MapLibre GL · Terrarium DEM</p>
+    </div>
+  ),
+});
 import ReporterRainfallInput from "./ReporterRainfallInput";
 import { toast } from 'react-hot-toast';
 import { useUserLocation } from '@/components/UserLocationMarker';
@@ -223,6 +235,28 @@ export default function MapWithKML() {
   const { tagFilter, setTagFilter, filteredPoints, filteredLines, filteredPolygons, allTags } = useHashtagFilter(geoData);
   // State untuk data batas desa
   const [showTerrain, setShowTerrain] = useState(false);
+
+  // ===== 3D MAP VIEW =====
+  const [show3DMap, setShow3DMap] = useState(false);
+  const [map3DCenter, setMap3DCenter] = useState<[number, number]>([107.06539, -6.48881]);
+  const [map3DZoom, setMap3DZoom] = useState<number>(14);
+
+  const handleOpen3DMap = useCallback(() => {
+    if (mapRef.current) {
+      const center = mapRef.current.getCenter();
+      const zoom = mapRef.current.getZoom();
+      setMap3DCenter([center.lng, center.lat]);
+      setMap3DZoom(Math.max(13, Math.min(18, zoom)));
+    }
+    setShow3DMap(true);
+  }, []);
+
+  const handleClose3DMap = useCallback((center?: [number, number], zoom?: number) => {
+    setShow3DMap(false);
+    if (center && mapRef.current) {
+      mapRef.current.setView([center[1], center[0]], zoom || mapRef.current.getZoom());
+    }
+  }, []);
   // ===== FUNGSI FORMAT =====
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [showAQI, setShowAQI] = useState(false);
@@ -838,6 +872,12 @@ useEffect(() => {
     }
   }, [buildingMedia, loadingMedia]);
 
+  const handleStationMediaChange = useCallback(() => {
+    if (activeStation?.name) {
+      loadBuildingMedia(activeStation.name);
+    }
+  }, [activeStation?.name, loadBuildingMedia]);
+
   const loadAllMedia = useCallback(async (points: any[]) => {
     if (!points || points.length === 0) return;
     const buildingIds = points.map(p => p.name).filter(Boolean);
@@ -1181,8 +1221,42 @@ const toggleTemperature = useCallback(() => {
     await loadAllMedia(categorizedPoints);
 
     if (categorizedPoints.length) {
-      setActiveStation(categorizedPoints[0]);
-      setActiveIdx(0);
+      let targetStation = categorizedPoints[0];
+      let targetIdx = 0;
+      let shouldOpenPanel = false;
+
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlStation = urlParams.get('station');
+        const savedStationName = urlStation || (typeof window !== 'undefined' ? localStorage.getItem('cipamingkis_active_station') : null);
+        const savedPanelOpen = typeof window !== 'undefined' ? localStorage.getItem('cipamingkis_panel_open') : null;
+
+        if (savedStationName) {
+          const foundIdx = categorizedPoints.findIndex(
+            (p: any) => p.name?.trim().toLowerCase() === savedStationName.trim().toLowerCase()
+          );
+          if (foundIdx !== -1) {
+            targetStation = categorizedPoints[foundIdx];
+            targetIdx = foundIdx;
+            shouldOpenPanel = savedPanelOpen !== 'false';
+          }
+        }
+      } catch (e) {
+        console.warn('Gagal membaca saved station:', e);
+      }
+
+      setActiveStation(targetStation);
+      setActiveIdx(targetIdx);
+
+      if (shouldOpenPanel && targetStation) {
+        setSelectedFeature(targetStation);
+        setIsPanelOpen(true);
+      }
+
+      // Jika ada target station dan belum ada manual center tersimpan, fokuskan map ke target station
+      if (targetStation && typeof window !== 'undefined' && !localStorage.getItem('cipamingkis_map_center') && mapRef.current) {
+        mapRef.current.setView([targetStation.lat, targetStation.lon], 16);
+      }
     }
   } catch (err: any) {
     setError(err.response?.data?.detail || 'Gagal load data');
@@ -1320,15 +1394,45 @@ useEffect(() => {
 
   // Fungsi inisialisasi map menggunakan L dari closure
   const initMap = () => {
-  if (!containerRef.current || mapRef.current || !L) return;
+    if (!containerRef.current || mapRef.current || !L) return;
 
-  const map = L.map(containerRef.current, {
-    zoomControl: false,
-    center: [-6.42531, 107.03924],
-    zoom: 13,
-    minZoom: 3,
-    maxZoom: 22,          // 🔥 boleh zoom jauh lebih dekat
-  });
+    let initCenter: [number, number] = [-6.42531, 107.03924];
+    let initZoom = 13;
+    try {
+      const savedCenter = typeof window !== 'undefined' ? localStorage.getItem('cipamingkis_map_center') : null;
+      const savedZoom = typeof window !== 'undefined' ? localStorage.getItem('cipamingkis_map_zoom') : null;
+      if (savedCenter) {
+        const parsed = JSON.parse(savedCenter);
+        if (Array.isArray(parsed) && parsed.length === 2 && !isNaN(parsed[0]) && !isNaN(parsed[1])) {
+          initCenter = [parsed[0], parsed[1]];
+        }
+      }
+      if (savedZoom) {
+        const z = parseInt(savedZoom, 10);
+        if (!isNaN(z) && z >= 3 && z <= 22) {
+          initZoom = z;
+        }
+      }
+    } catch (e) {
+      console.warn('Gagal memulihkan posisi peta:', e);
+    }
+
+    const map = L.map(containerRef.current, {
+      zoomControl: false,
+      center: initCenter,
+      zoom: initZoom,
+      minZoom: 3,
+      maxZoom: 22,          // 🔥 boleh zoom jauh lebih dekat
+    });
+
+    map.on('moveend', () => {
+      try {
+        const c = map.getCenter();
+        const z = map.getZoom();
+        localStorage.setItem('cipamingkis_map_center', JSON.stringify([c.lat, c.lng]));
+        localStorage.setItem('cipamingkis_map_zoom', z.toString());
+      } catch (e) {}
+    });
 
   // Tile satelit (Esri World Imagery)
   L.tileLayer(
@@ -1603,185 +1707,314 @@ useEffect(() => {
           const style = document.createElement('style');
           style.id = 'mercu-waterfall-style';
           style.textContent = `
-            @keyframes mercu-flow {
-              from { stroke-dashoffset: 220; }
-              to   { stroke-dashoffset: 0; }
+            /* 1. Aliran deras air terjun meluncur ke bawah */
+            @keyframes mercu-stream-rush {
+              0%   { stroke-dashoffset: 36; }
+              100% { stroke-dashoffset: 0; }
             }
-            @keyframes mercu-pulse {
-              0%, 100% { fill-opacity: 0.30; }
-              50%      { fill-opacity: 0.75; }
+
+            /* 2. Buih loncatan hidrolis di dasar kolam olak */
+            @keyframes mercu-boiling-foam {
+              0%, 100% {
+                stroke-width: 5px;
+                opacity: 0.85;
+                stroke-dashoffset: 0;
+              }
+              50% {
+                stroke-width: 9px;
+                opacity: 1;
+                stroke-dashoffset: 14;
+              }
             }
-            @keyframes mercu-cascade {
-              0%   { stroke-dashoffset: 28; opacity: 0.15; }
-              40%  { opacity: 1; }
-              100% { stroke-dashoffset: 0; opacity: 0.15; }
+
+            @keyframes mercu-hydraulic-glow {
+              0%, 100% {
+                stroke-width: 7px;
+                opacity: 0.45;
+              }
+              50% {
+                stroke-width: 12px;
+                opacity: 0.8;
+              }
             }
-            @keyframes mercu-spray {
-              0%   { r: 2; opacity: 0.9; }
-              100% { r: 8; opacity: 0; }
+
+            /* 3. Ombak riak air bergerak ke arah hilir */
+            @keyframes mercu-ripple-move {
+              0% {
+                stroke-dashoffset: 44;
+                opacity: 0.25;
+              }
+              50% {
+                opacity: 0.85;
+              }
+              100% {
+                stroke-dashoffset: 0;
+                opacity: 0.2;
+              }
             }
-            .mercu-crest-flow {
-              animation: mercu-flow 1.6s linear infinite;
-              filter: url(#water-turbulence);
+
+            /* 4. Kilau air di bibir puncak mercu */
+            @keyframes mercu-lip-sheen {
+              0%, 100% {
+                opacity: 0.85;
+              }
+              50% {
+                opacity: 1;
+              }
             }
-            .mercu-foam-pulse {
-              animation: mercu-pulse 2.2s ease-in-out infinite;
+
+            /* 5. Partikel kabut/spray */
+            @keyframes mercu-spray-particle {
+              0%, 100% {
+                opacity: 0.35;
+              }
+              50% {
+                opacity: 0.95;
+              }
             }
-            .mercu-cascade-line {
-              animation: mercu-cascade 1.1s linear infinite;
-              filter: url(#water-turbulence);
+
+            .mercu-water-stream {
+              animation: mercu-stream-rush 0.7s linear infinite;
             }
-            .mercu-spray {
-              animation: mercu-spray 1.4s ease-out infinite;
+            .mercu-foam-streak {
+              animation: mercu-stream-rush 0.65s linear infinite;
+            }
+            .mercu-boiling-foam {
+              animation: mercu-boiling-foam 1.2s ease-in-out infinite;
+            }
+            .mercu-hydraulic-glow {
+              animation: mercu-hydraulic-glow 1.6s ease-in-out infinite;
+            }
+            .mercu-ripple-wave {
+              animation: mercu-ripple-move 1.6s linear infinite;
+            }
+            .mercu-crest-lip {
+              animation: mercu-lip-sheen 1.8s ease-in-out infinite;
+            }
+            .mercu-spray-particle {
+              animation: mercu-spray-particle 1s ease-in-out infinite;
             }
           `;
           document.head.appendChild(style);
         }
 
-            // ---- 1. Kolam olak / badan air (dasar) ----
-            const mercuPool = L.polygon(poly.path, {
-              color: '#0369A1',
-              fillColor: '#0EA5E9',
-              fillOpacity: 0.55,
-              weight: 2,
-            });
+        // ---- GEOMETRI MERCU & AIR JATUH ----
+        const rawCoords: number[][] = Array.isArray(poly.path)
+          ? (Array.isArray(poly.path[0]) && typeof poly.path[0][0] === 'number'
+              ? (poly.path as number[][])
+              : (poly.path[0] as number[][]))
+          : [];
 
-            // ---- 2. Foam putih berdenyut (buih) ----
-            const mercuFoam = L.polygon(poly.path, {
-              color: '#FFFFFF',
-              fillColor: '#E0F2FE',
-              fillOpacity: 0.5,
-              weight: 1,
-              className: 'mercu-foam-pulse',
-              interactive: false,
-            });
+        if (rawCoords.length >= 3) {
+          // Garis bibir puncak mercu (Crest Line dari tepi barat ke tepi timur)
+          const pWest = rawCoords[0];
+          const pEast = rawCoords[3] || rawCoords[Math.floor(rawCoords.length / 2)];
 
-            // ---- 3. Crest line dengan aliran turbulensi ----
-            const mercuCrest = L.polygon(poly.path, {
-              color: '#F0F9FF',
-              weight: 4,
-              fillColor: 'transparent',
-              fillOpacity: 0,
-              dashArray: '6, 10',
-              className: 'mercu-crest-flow',
-              interactive: false,
-            });
+          const crestLatDiff = pEast[0] - pWest[0];
+          const crestLngDiff = pEast[1] - pWest[1];
+          const crestLen = Math.hypot(crestLatDiff, crestLngDiff) || 1;
 
-            // ---- 4. Cascade: garis air jatuh tegak lurus crest ----
-            const cascadeLayers: L.Polyline[] = [];
-            const path = poly.path as number[][];
-            const p0 = path[0];
-            const pMid = path[Math.floor(path.length / 2)];
-            const axisLat = pMid[0] - p0[0];
-            const axisLng = pMid[1] - p0[1];
-            const axisLen = Math.hypot(axisLat, axisLng) || 1;
-            // Perpendicular (rotasi 90°) — arah jatuh air
-            const perpLat = -axisLng / axisLen;
-            const perpLng =  axisLat / axisLen;
-            const dropLen = 0.00022; // ~22 m (jarak visual jatuh)
+          // Vektor tegak lurus mengarah ke hilir sungai (Utara/Barat Laut: dLat > 0)
+          const normLat = Math.abs(crestLngDiff) / crestLen;
+          const normLng = -crestLatDiff / crestLen;
+          const normMag = Math.hypot(normLat, normLng) || 1;
+          const flowLat = normLat / normMag;
+          const flowLng = normLng / normMag;
 
-            const numDrops = 7;
-            for (let i = 1; i <= numDrops; i++) {
-              const t = i / (numDrops + 1);
-              const baseLat = p0[0] + axisLat * (t * 2); // interpolasi 0..1
-              const baseLng = p0[1] + axisLng * (t * 2);
-              const endLat  = baseLat + perpLat * dropLen;
-              const endLng  = baseLng + perpLng * dropLen;
+          // Jarak jatuh air dari bibir mercu ke dasar kolam olak (~20 meter)
+          const dropLen = 0.00018;
 
-              const cascade = L.polyline(
-                [[baseLat, baseLng], [endLat, endLng]],
+          const numStreams = 24;
+          const crestSampled: [number, number][] = [];
+          const footSampled: [number, number][] = [];
+          const rippleSampled: [number, number][] = [];
+          const cascadeLayers: (L.Polyline | L.CircleMarker)[] = [];
+
+          for (let i = 0; i <= numStreams; i++) {
+            const t = i / numStreams;
+            const cLat = pWest[0] + crestLatDiff * t;
+            const cLng = pWest[1] + crestLngDiff * t;
+            const fLat = cLat + flowLat * dropLen;
+            const fLng = cLng + flowLng * dropLen;
+            const rLat = cLat + flowLat * (dropLen * 1.55);
+            const rLng = cLng + flowLng * (dropLen * 1.55);
+
+            crestSampled.push([cLat, cLng]);
+            footSampled.push([fLat, fLng]);
+            rippleSampled.push([rLat, rLng]);
+
+            // Buat stream air meluncur ke bawah (hanya untuk i < numStreams)
+            if (i < numStreams) {
+              const streamMidLat = (cLat + (pWest[0] + crestLatDiff * ((i + 1) / numStreams))) / 2;
+              const streamMidLng = (cLng + (pWest[1] + crestLngDiff * ((i + 1) / numStreams))) / 2;
+              const streamFootLat = streamMidLat + flowLat * dropLen;
+              const streamFootLng = streamMidLng + flowLng * dropLen;
+
+              // Lapisan 1: Arus air biru cyan
+              const waterStream = L.polyline(
+                [[streamMidLat, streamMidLng], [streamFootLat, streamFootLng]],
                 {
-                  color: '#BAE6FD',
-                  weight: 3,
-                  opacity: 0.85,
-                  dashArray: '2, 6',
-                  className: 'mercu-cascade-line',
+                  color: '#38BDF8',
+                  weight: 4,
+                  opacity: 0.8,
+                  dashArray: '8, 8',
+                  className: 'mercu-water-stream',
                   interactive: false,
                 }
               );
-              cascadeLayers.push(cascade);
+              cascadeLayers.push(waterStream);
+
+              // Lapisan 2: Pita buih putih berkecepatan tinggi (berlapis dinamis)
+              if (i % 2 === 0 || i % 3 === 0) {
+                const foamStreak = L.polyline(
+                  [[streamMidLat, streamMidLng], [streamFootLat, streamFootLng]],
+                  {
+                    color: '#FFFFFF',
+                    weight: 2.5,
+                    opacity: 0.95,
+                    dashArray: '5, 9',
+                    className: 'mercu-foam-streak',
+                    interactive: false,
+                  }
+                );
+                cascadeLayers.push(foamStreak);
+              }
             }
+          }
 
-            // ---- 5. Spray / percikan di titik jatuh ----
-            const sprayGroup = L.layerGroup();
-            for (let i = 1; i <= numDrops; i++) {
-              const t = i / (numDrops + 1);
-              const baseLat = p0[0] + axisLat * (t * 2) + perpLat * dropLen;
-              const baseLng = p0[1] + axisLng * (t * 2) + perpLng * dropLen;
-              const spray = L.circleMarker([baseLat, baseLng], {
-                radius: 4,
-                color: '#E0F2FE',
-                fillColor: '#FFFFFF',
-                fillOpacity: 0.7,
-                weight: 1,
-                className: 'mercu-spray',
-                interactive: false,
-              });
-              sprayGroup.addLayer(spray);
-            }
+          // ---- 1. Kolam Olak / Badan Air Terjun (Dasar) ----
+          const basinPolygonCoords = [
+            ...crestSampled,
+            ...footSampled.slice().reverse(),
+          ];
+          const mercuPool = L.polygon(basinPolygonCoords, {
+            color: '#0284C7',
+            fillColor: '#0369A1',
+            fillOpacity: 0.65,
+            weight: 1.5,
+          });
 
-            // ---- Popup ----
-            const popupContent = `
-                <div style="font-family:Inter;min-width:230px;">
-                  <h4 style="margin:0 0 6px 0;font-size:14px;color:#1a1a2e;">${poly.name || 'Mercu Bendung'}</h4>
+          // ---- 2. Bibir Puncak Mercu (Crest Lip) ----
+          const mercuCrestGlow = L.polyline(crestSampled, {
+            color: '#38BDF8',
+            weight: 6,
+            opacity: 0.5,
+            interactive: false,
+          });
+          const mercuCrestLip = L.polyline(crestSampled, {
+            color: '#FFFFFF',
+            weight: 3.5,
+            opacity: 0.95,
+            className: 'mercu-crest-lip',
+            interactive: false,
+          });
 
-                  <div style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;background:#e0f2fe;border-radius:8px;border:1px solid #7dd3fc;">
-                    <span style="font-size:14px;">💧</span>
-                    <span style="font-size:11px;font-weight:700;color:#0284C7;letter-spacing:0.3px;">AIR TERJUN / MERCU</span>
-                  </div>
+          // ---- 3. Loncatan Hidrolis (Hydraulic Jump Boiling Foam di Kaki Terjunan) ----
+          const hydraulicGlow = L.polyline(footSampled, {
+            color: '#0EA5E9',
+            weight: 10,
+            opacity: 0.5,
+            className: 'mercu-hydraulic-glow',
+            interactive: false,
+          });
+          const hydraulicFoam = L.polyline(footSampled, {
+            color: '#FFFFFF',
+            weight: 6,
+            opacity: 0.95,
+            dashArray: '5, 5',
+            className: 'mercu-boiling-foam',
+            interactive: false,
+          });
 
-                  ${mercuDebit ? `
-                    <div style="margin-top:8px;padding:10px;background:#f0f9ff;border-radius:8px;border:1px solid #bae6fd;">
-                      <div style="font-size:10px;color:#666;margin-bottom:3px;">Debit terbaru</div>
-                      <div style="font-size:20px;font-weight:800;color:#0369a1;font-family:monospace;line-height:1.1;">
-                        ${Number(mercuDebit.debit).toFixed(2)}
-                        <span style="font-size:11px;font-weight:600;">m³/d</span>
-                      </div>
-                      <div style="font-size:9px;color:#94a3b8;margin-top:4px;">
-                        Update: ${mercuDebit.tanggal || '-'} · ${mercuDebit.jam || '-'}
-                      </div>
-                    </div>
-                  ` : `
-                    <div style="margin-top:8px;padding:8px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;color:#94a3b8;font-size:10px;">
-                      Belum ada data debit hari ini.
-                    </div>
-                  `}
+          // ---- 4. Ombak Riak Air di Hilir (Downstream Ripples) ----
+          const downstreamRipple = L.polyline(rippleSampled, {
+            color: '#BAE6FD',
+            weight: 2.5,
+            opacity: 0.75,
+            dashArray: '10, 8',
+            className: 'mercu-ripple-wave',
+            interactive: false,
+          });
 
-                  <p style="margin:8px 0 0 0;font-size:10px;color:#666;line-height:1.4;">
-                    Aliran air jatuh dari puncak bendung menuju kolam olak.
-                  </p>
-                </div>
-              `;
-            mercuPool.bindPopup(popupContent);
-            mercuPool.on('click', () => {
-              setSelectedFeature({
-                name: poly.name,
-                category: 'MERCU_BENDUNG',
-                description: poly.description,
-                tags: poly.tags || [],
-                lat: (p0[0] + pMid[0]) / 2,
-                lon: (p0[1] + pMid[1]) / 2,
-
-                // 🔥 debit
-                debit: mercuDebit?.debit ?? null,
-                debitInfo: mercuDebit || null,
-                bendungName: 'Mercu Bendung',
-              });
-              if (!isPanelOpen) setIsPanelOpen(true);
+          // ---- 5. Percikan Spray / Mist di Kaki Terjunan ----
+          const sprayGroup = L.layerGroup();
+          for (let i = 1; i < footSampled.length; i += 3) {
+            const spray = L.circleMarker(footSampled[i], {
+              radius: 4,
+              color: '#E0F2FE',
+              fillColor: '#FFFFFF',
+              fillOpacity: 0.8,
+              weight: 1,
+              className: 'mercu-spray-particle',
+              interactive: false,
             });
+            sprayGroup.addLayer(spray);
+          }
 
-            // ---- Gabung jadi satu layer group ----
-            const mercuGroup = L.layerGroup([
-              mercuPool,
-              mercuFoam,
-              mercuCrest,
-              ...cascadeLayers,
-              sprayGroup,
-            ]);
+          // ---- Popup ----
+          const popupContent = `
+              <div style="font-family:Inter;min-width:230px;">
+                <h4 style="margin:0 0 6px 0;font-size:14px;color:#1a1a2e;font-weight:700;">${poly.name || 'Mercu Bendung'}</h4>
 
-            if (!polygonGroups['default']) polygonGroups['default'] = L.layerGroup();
-            polygonGroups['default'].addLayer(mercuGroup);
-            return; // skip rendering normal
+                <div style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;background:#e0f2fe;border-radius:8px;border:1px solid #7dd3fc;">
+                  <span style="font-size:14px;">💧</span>
+                  <span style="font-size:11px;font-weight:700;color:#0284C7;letter-spacing:0.3px;">LIMPASAN AIR MERCU BENDUNG</span>
+                </div>
+
+                ${mercuDebit ? `
+                  <div style="margin-top:8px;padding:10px;background:#f0f9ff;border-radius:8px;border:1px solid #bae6fd;">
+                    <div style="font-size:10px;color:#666;margin-bottom:3px;">Debit Air Terjun</div>
+                    <div style="font-size:20px;font-weight:800;color:#0369a1;font-family:monospace;line-height:1.1;">
+                      ${Number(mercuDebit.debit).toFixed(2)}
+                      <span style="font-size:11px;font-weight:600;">m³/d</span>
+                    </div>
+                    <div style="font-size:9px;color:#94a3b8;margin-top:4px;">
+                      Update: ${mercuDebit.tanggal || '-'} · ${mercuDebit.jam || '-'}
+                    </div>
+                  </div>
+                ` : `
+                  <div style="margin-top:8px;padding:8px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;color:#94a3b8;font-size:10px;">
+                    Belum ada data debit hari ini.
+                  </div>
+                `}
+
+                <p style="margin:8px 0 0 0;font-size:10px;color:#666;line-height:1.4;">
+                  Visualisasi tirai air meluncur dari puncak mercu menuju kolam olak peredam energi.
+                </p>
+              </div>
+            `;
+          mercuPool.bindPopup(popupContent);
+          mercuPool.on('click', () => {
+            setSelectedFeature({
+              name: poly.name,
+              category: 'MERCU_BENDUNG',
+              description: poly.description,
+              tags: poly.tags || [],
+              lat: (pWest[0] + pEast[0]) / 2,
+              lon: (pWest[1] + pEast[1]) / 2,
+              debit: mercuDebit?.debit ?? null,
+              debitInfo: mercuDebit || null,
+              bendungName: 'Mercu Bendung',
+            });
+            if (!isPanelOpen) setIsPanelOpen(true);
+          });
+
+          // ---- Gabung jadi satu layer group ----
+          const mercuGroup = L.layerGroup([
+            mercuPool,
+            mercuCrestGlow,
+            mercuCrestLip,
+            ...cascadeLayers,
+            hydraulicGlow,
+            hydraulicFoam,
+            downstreamRipple,
+            sprayGroup,
+          ]);
+
+          if (!polygonGroups['default']) polygonGroups['default'] = L.layerGroup();
+          polygonGroups['default'].addLayer(mercuGroup);
+          return; // skip rendering normal
+        }
           }
           // ===== END MERCU =====
       
@@ -2290,7 +2523,6 @@ useEffect(() => {
 
 points.forEach((point: any, idx: number) => {
   if (!point || typeof point.lat !== 'number' || typeof point.lon !== 'number') return;
-  loadBuildingMedia(point.name);
   const media = buildingMedia[point.name] || [];
   const icon = getMarkerIcon(point, media);
   const category = point.category || 'default';
@@ -2308,6 +2540,14 @@ points.forEach((point: any, idx: number) => {
       setActiveStation(point);
       setActiveIdx(idx);
       setSelectedFeature(point);
+      if (!isPanelOpen) setIsPanelOpen(true);
+      try {
+        localStorage.setItem('cipamingkis_active_station', point.name);
+        localStorage.setItem('cipamingkis_panel_open', 'true');
+        const url = new URL(window.location.href);
+        url.searchParams.set('station', point.name);
+        window.history.replaceState({}, '', url.toString());
+      } catch (e) {}
 
       const role = normalizeRole(session?.user?.role);
 
@@ -2387,7 +2627,8 @@ points.forEach((point: any, idx: number) => {
       }
 
       loadBuildingMedia(point.name);
-      map.flyTo([point.lat, point.lon], 17, { duration: 1.2 });
+      // Sengaja TIDAK zoom/flyTo: titik bangunan yang berdekatan (spiderfy cluster)
+      // akan menutup lagi kalau peta di-zoom, jadi user tetap bisa klik titik sebelahnya.
     });
 
   if (markerGroups[category]) markerGroups[category].addLayer(marker);
@@ -2570,10 +2811,17 @@ if (showWind && envData?.windSpeed) {
     // ⬆️⬆️⬆️ SAMPAI SINI ⬆️⬆️⬆️
     
 
-    // Fit bounds
+    // Fit bounds: hanya saat user pertama kali berkunjung tanpa saved position / station
     if (points.length > 0 && !initialFitDone.current) {
-      const bounds = L.latLngBounds(points.map((p: any) => [p.lat, p.lon]));
-      map.fitBounds(bounds, { padding: [50, 50] });
+      const hasSavedState = typeof window !== 'undefined' && (
+        localStorage.getItem('cipamingkis_map_center') ||
+        localStorage.getItem('cipamingkis_active_station') ||
+        new URLSearchParams(window.location.search).get('station')
+      );
+      if (!hasSavedState) {
+        const bounds = L.latLngBounds(points.map((p: any) => [p.lat, p.lon]));
+        map.fitBounds(bounds, { padding: [50, 50] });
+      }
       initialFitDone.current = true;
     }
     setTimeout(() => { if (mapRef.current) mapRef.current.invalidateSize(); }, 300);
@@ -2963,6 +3211,29 @@ if (error) {
       <div className="relative h-full w-full bg-gray-50 dark:bg-[#0a0a1a]">
         {/* MAP CONTAINER */}
         <div ref={containerRef} className="absolute inset-0 h-full w-full" />
+
+        {/* 3D MAP VIEW OVERLAY */}
+        {show3DMap && (
+          <Map3DViewer
+            initialCenter={map3DCenter}
+            initialZoom={map3DZoom}
+            points={filteredPoints}
+            activeStation={activeStation}
+            onSelectPoint={(pt) => {
+              setActiveStation(pt);
+              setSelectedFeature(pt);
+              if (!isPanelOpen) setIsPanelOpen(true);
+              try {
+                localStorage.setItem('cipamingkis_active_station', pt.name);
+                localStorage.setItem('cipamingkis_panel_open', 'true');
+                const url = new URL(window.location.href);
+                url.searchParams.set('station', pt.name);
+                window.history.replaceState({}, '', url.toString());
+              } catch (e) {}
+            }}
+            onClose={handleClose3DMap}
+          />
+        )}
         <svg style={{ position: 'absolute', width: 0, height: 0 }} aria-hidden="true">
           <defs>
             <filter id="water-turbulence" x="-20%" y="-20%" width="140%" height="140%">
@@ -3022,10 +3293,18 @@ if (error) {
                           onClick={() => {
                             setActiveStation(point);
                             setSelectedFeature(point);
+                            if (!isPanelOpen) setIsPanelOpen(true);
                             const foundIdx = stationPoints.findIndex((p: any) => p.name === point.name);
                             setActiveIdx(foundIdx);
                             if (mapRef.current) mapRef.current.flyTo([point.lat, point.lon], 17, { duration: 1.2 });
                             setSearchQuery('');
+                            try {
+                              localStorage.setItem('cipamingkis_active_station', point.name);
+                              localStorage.setItem('cipamingkis_panel_open', 'true');
+                              const url = new URL(window.location.href);
+                              url.searchParams.set('station', point.name);
+                              window.history.replaceState({}, '', url.toString());
+                            } catch (e) {}
                           }}
                           className="w-full px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-[#2a2a4e] transition-colors border-b border-gray-100 dark:border-[#2a2a4e] last:border-0 flex items-center gap-3"
                         >
@@ -3112,6 +3391,19 @@ if (error) {
           title="Alat Ukur"
         >
           <i className="fa-solid fa-ruler-combined" />
+        </button>
+
+        {/* 🏔️ 3D MAP BUTTON */}
+        <button
+          onClick={handleOpen3DMap}
+          className={`w-10 h-10 rounded-full shadow-lg border flex items-center justify-center transition font-extrabold text-xs ${
+            show3DMap
+              ? 'bg-[#00c8ff] text-white border-[#00c8ff] ring-2 ring-[#00c8ff]/40 shadow-lg shadow-[#00c8ff]/30'
+              : 'bg-white dark:bg-[#1a1a2e] border-gray-200 dark:border-[#2a2a4e] text-[#00c8ff] hover:bg-[#00c8ff]/10 dark:hover:bg-[#00c8ff]/20'
+          }`}
+          title="Tampilan Peta 3D (3D Terrain & Drone View)"
+        >
+          <span className="font-extrabold text-xs tracking-tight">3D</span>
         </button>
 
 
@@ -3326,7 +3618,10 @@ if (error) {
 
               {/* CLOSE PANEL */}
               <button
-                onClick={() => setIsPanelOpen(false)}
+                onClick={() => {
+                  setIsPanelOpen(false);
+                  try { localStorage.setItem('cipamingkis_panel_open', 'false'); } catch (e) {}
+                }}
                 className="w-8 h-8 rounded-lg hover:bg-gray-100 dark:hover:bg-[#2a2a4e] flex items-center justify-center text-gray-500 dark:text-gray-400"
               >
                 <i className="fa-solid fa-xmark"></i>
@@ -3342,7 +3637,11 @@ if (error) {
               <FeatureDetail
                 feature={selectedFeature}
                 media={buildingMedia[selectedFeature.name] || []}
-                onClose={() => setSelectedFeature(null)}
+                onClose={() => {
+                  setSelectedFeature(null);
+                  setIsPanelOpen(false);
+                  try { localStorage.setItem('cipamingkis_panel_open', 'false'); } catch (e) {}
+                }}
               />
             )}
 
@@ -3453,7 +3752,7 @@ if (error) {
                   buildingName={activeStation.name}
                   buildingLat={activeStation.lat}
                   buildingLon={activeStation.lon}
-                  onMediaChange={() => loadBuildingMedia(activeStation.name)}
+                  onMediaChange={handleStationMediaChange}
                   userRole={session?.user?.role}
                   userPolygon={session?.user?.polygon}
                   userLocation={userLocation}
@@ -3813,7 +4112,11 @@ if (error) {
  
         {/* TOGGLE PANEL BUTTON */}
         <button
-          onClick={() => setIsPanelOpen(!isPanelOpen)}
+          onClick={() => {
+            const next = !isPanelOpen;
+            setIsPanelOpen(next);
+            try { localStorage.setItem('cipamingkis_panel_open', next ? 'true' : 'false'); } catch (e) {}
+          }}
           className={`
             fixed z-[1000]
             ${isPanelOpen ? 'hidden' : 'flex'}
